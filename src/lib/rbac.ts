@@ -1,5 +1,6 @@
-import { countMembers, getMembership, getUser, getWorkspace, listMembers } from "./db";
-import { tierFeatures } from "./config";
+import { countMembers, getMembership, getSession, getUser, getWorkspace, listMembers } from "./db";
+import { isProdRuntime, tierFeatures } from "./config";
+import { SESSION_COOKIE, parseCookies } from "./auth";
 import type { PlanTier, WorkspaceRole, WorkspaceRow } from "./types";
 
 /**
@@ -29,28 +30,28 @@ export class AuthzError extends Error {
   }
 }
 
-/** Resolve the acting user from headers (demo-grade identity for a local app). */
+/**
+ * Blocker #1: resolve the acting user from the signed-in session cookie.
+ * The legacy x-crisp-user-id header is no longer trusted anywhere. Requests
+ * without a valid session throw 401 before any workspace/role check runs.
+ */
+export function requireAuthenticatedUser(request: Request): { id: string; name: string; email: string } {
+  const token = parseCookies(request.headers.get("cookie") ?? "")[SESSION_COOKIE];
+  if (!token) throw new AuthzError("Authentication required. Sign in to continue.", 401);
+  const session = getSession(token);
+  if (!session) throw new AuthzError("Session expired or invalid. Sign in again.", 401);
+  const user = getUser(session.user_id);
+  if (!user) throw new AuthzError("This account no longer exists.", 401);
+  return user;
+}
+
+/** Dev-only impersonation hook for the local demo switcher; disabled in production. */
+export function devImpersonationEnabled(): boolean {
+  return !isProdRuntime();
+}
+
 export function resolveUserId(request: Request): string {
-  const headerId = request.headers.get("x-crisp-user-id");
-  if (headerId) {
-    const user = getUser(headerId);
-    if (user) return user.id;
-  }
-  return defaultUserIdSafe();
-}
-
-let cachedDefaultUser: string | undefined;
-function defaultUserIdSafe(): string {
-  cachedDefaultUser ??= (
-    getDbSafe().prepare("SELECT id FROM users ORDER BY rowid LIMIT 1").get() as { id: string }
-  ).id;
-  return cachedDefaultUser;
-}
-
-function getDbSafe() {
-  // Direct import would be fine too; kept local to make the dependency explicit.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  return (require("./db") as typeof import("./db")).getDb();
+  return requireAuthenticatedUser(request).id;
 }
 
 /**

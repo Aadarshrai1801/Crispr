@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type {
   ApiKeyRow,
   AuditActionType,
@@ -27,7 +27,9 @@ import type {
   WorkspaceRole,
   WorkspaceRow,
 } from "./types";
-import { sqlitePath, validateProductionEnv } from "./config";
+import { sqlitePath, validateProductionEnv, isProdRuntime } from "./config";
+import { hashPassword } from "./auth";
+import { sha256Hex } from "./crypto-utils";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -69,6 +71,7 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "corrections", "rejection_reason", "TEXT");
   ensureColumn(db, "corrections", "needs_version_review", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "corrections", "suggested_correction_id", "TEXT");
+  ensureColumn(db, "users", "password_hash", "TEXT");
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS workspace_members (
@@ -168,6 +171,13 @@ function migrate(db: Database.Database) {
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_documents_ws ON documents(workspace_id);
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      expires_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
   `);
 }
 
@@ -256,17 +266,46 @@ const DEMO_USERS: Array<{ id: string; name: string; email: string }> = [
   { id: "user_dana", name: "Dana (Admin)", email: "dana@crispai.app" },
 ];
 
+/**
+ * Shared development password for seeded local accounts. Never used in
+ * production: demo teammates are not seeded there, and the owner account must
+ * be bootstrapped with scripts/create-user.mjs.
+ */
+export const DEV_SEED_PASSWORD = "demo1234";
+
 function seed(db: Database.Database) {
+  validateProductionEnv();
   const user = db.prepare("SELECT id FROM users LIMIT 1").get();
   let ownerId: string;
   if (!user) {
     ownerId = "user_local_" + randomUUID().slice(0, 8);
-    db.prepare("INSERT INTO users (id, name, email) VALUES (?, ?, ?)").run(ownerId, "Local User", "local@crispai.app");
+    db.prepare("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)").run(
+      ownerId,
+      "Local User",
+      "local@crispai.app",
+      hashPassword(DEV_SEED_PASSWORD)
+    );
   } else {
     ownerId = (user as { id: string }).id;
+    // Backfill a dev password for pre-auth local accounts (dev-only convenience).
+    if (!isProdRuntime()) {
+      db.prepare("UPDATE users SET password_hash = ? WHERE password_hash IS NULL AND id = ?").run(
+        hashPassword(DEV_SEED_PASSWORD),
+        ownerId
+      );
+    }
   }
-  for (const du of DEMO_USERS) {
-    db.prepare("INSERT OR IGNORE INTO users (id, name, email) VALUES (?, ?, ?)").run(du.id, du.name, du.email);
+
+  // Demo teammates only exist in non-production runtimes (N17).
+  if (!isProdRuntime()) {
+    for (const du of DEMO_USERS) {
+      db.prepare("INSERT OR IGNORE INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)").run(
+        du.id,
+        du.name,
+        du.email,
+        hashPassword(DEV_SEED_PASSWORD)
+      );
+    }
   }
 
   let wsId = "ws_default";
@@ -331,8 +370,6 @@ export function getDb(): Database.Database {
 }
 
 export const defaultWorkspaceId = () => "ws_default";
-export const defaultUserId = () =>
-  (getDb().prepare("SELECT id FROM users ORDER BY rowid LIMIT 1").get() as { id: string }).id;
 
 /* ------------------------- Users ------------------------- */
 
@@ -342,6 +379,46 @@ export function listUsers(): UserRow[] {
 
 export function getUser(id: string): UserRow | undefined {
   return getDb().prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
+}
+
+export function getUserByEmail(email: string): UserRow | undefined {
+  return getDb().prepare("SELECT * FROM users WHERE lower(email) = lower(?)").get(email) as
+    | UserRow
+    | undefined;
+}
+
+/* ------------------------- Sessions ------------------------- */
+
+export interface SessionInfo {
+  user_id: string;
+  expires_at: string;
+}
+
+/** Creates a server-side session; returns the raw bearer token (only time it exists). */
+export function createSession(userId: string, ttlMs: number): { token: string; expires_at: string } {
+  const token = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  getDb().prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)").run(
+    sha256Hex(token),
+    userId,
+    expiresAt
+  );
+  // Opportunistic cleanup of expired rows.
+  getDb().prepare("DELETE FROM sessions WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now')").run();
+  return { token, expires_at: expiresAt };
+}
+
+export function getSession(token: string): SessionInfo | undefined {
+  const row = getDb()
+    .prepare(
+      "SELECT user_id, expires_at FROM sessions WHERE token_hash = ? AND expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+    )
+    .get(sha256Hex(token)) as SessionInfo | undefined;
+  return row;
+}
+
+export function deleteSession(token: string): void {
+  getDb().prepare("DELETE FROM sessions WHERE token_hash = ?").run(sha256Hex(token));
 }
 
 /* ------------------------- Workspaces ------------------------- */

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { answerQuestion, readyDocumentIds, resolveQueryScope } from "@/lib/retrieval";
 import { getDocument, listDocuments } from "@/lib/db";
 import { ApiKeyError, authenticateApiKey, requireScope } from "@/lib/api-key-auth";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +26,10 @@ export async function POST(request: Request) {
   try {
     const ctx = authenticateApiKey(request);
     requireScope(ctx, "query");
+
+    // Blocker #4: public API keys can burn Groq budget — hard per-key cap.
+    const limit = checkRateLimit(`query:apikey:${ctx.key.id}`, "llmQuery");
+    if (!limit.ok) return rateLimitResponse(limit);
 
     const body = BodySchema.parse(await request.json());
     const wsId = ctx.workspace_id;

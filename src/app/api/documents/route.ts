@@ -18,6 +18,7 @@ import { audit } from "@/lib/audit";
 import { AuthzError, requireContext, resolveUserId } from "@/lib/rbac";
 import { isSupportedUpload } from "@/lib/formats";
 import { tierCaps } from "@/lib/config";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,10 +44,10 @@ export async function GET(request: Request) {
   sweepStale();
   const wsId = workspaceFromRequest(request);
   try {
-    // Viewers can list documents (FR-34); non-members cannot see anything.
+    // Viewers can list documents (FR-34); unauthenticated/non-members cannot.
     await requireContext(request, wsId);
   } catch (err) {
-    if (err instanceof AuthzError && err.status === 403) return NextResponse.json({ error: err.message }, { status: 403 });
+    if (err instanceof AuthzError) return NextResponse.json({ error: err.message }, { status: err.status });
     throw err;
   }
   const docs = listDocuments(wsId);
@@ -66,6 +67,10 @@ export async function POST(request: Request) {
 
     const ctx = await import("@/lib/rbac").then((m) => m.requireContext(request, wsId));
     await import("@/lib/rbac").then((m) => m.requireContributor(ctx)); // FR-34: Viewer cannot upload
+
+    // Blocker #4: uploads trigger OCR/embedding compute.
+    const limit = checkRateLimit(`write:${ctx.userId}`, "write");
+    if (!limit.ok) return rateLimitResponse(limit);
 
     // PRD packaging: Free tier caps documents at 1-3.
     const cap = tierCaps[ctx.workspace.plan_tier].documents;

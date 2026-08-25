@@ -128,32 +128,42 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
 
-          {/* User switcher */}
+          {/* User menu */}
           <div className="relative flex items-center justify-between px-1">
             <button
               onClick={() => setOpenMenu(openMenu === "user" ? null : "user")}
               className="focus-ring min-w-0 flex-1 rounded-lg px-1.5 py-1 text-left hover:bg-surface-hover"
             >
               <span className="block truncate text-xs text-ink-soft">
-                {activeUser ? `${activeUser.name}${session.role ? ` · ${session.role}` : ""}` : "local@crispai.app"}
+                {activeUser ? `${activeUser.name}${session.role ? ` · ${session.role}` : ""}` : "Signed out"}
               </span>
             </button>
             <ThemeToggle />
             {openMenu === "user" && (
               <div className="absolute bottom-full left-0 z-50 mb-1 w-full overflow-hidden rounded-xl border border-line bg-surface shadow-[var(--shadow-card)]">
-                <p className="border-b border-line px-3 py-1.5 font-mono text-[9px] uppercase tracking-wider text-ink-faint">
-                  Act as (RBAC demo)
-                </p>
-                {session.users.map((u) => (
-                  <button
-                    key={u.id}
-                    onClick={() => session.setUser(u.id)}
-                    className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-surface-hover"
-                  >
-                    <span className="truncate">{u.name}</span>
-                    {u.id === session.userId && <Check size={12} weight="bold" className="text-accent" />}
-                  </button>
-                ))}
+                {session.users.length > 1 && (
+                  <>
+                    <p className="border-b border-line px-3 py-1.5 font-mono text-[9px] uppercase tracking-wider text-ink-faint">
+                      Act as (RBAC demo — dev only)
+                    </p>
+                    {session.users.map((u) => (
+                      <button
+                        key={u.id}
+                        onClick={() => session.setUser(u.id)}
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-surface-hover"
+                      >
+                        <span className="truncate">{u.name}</span>
+                        {u.id === session.userId && <Check size={12} weight="bold" className="text-accent" />}
+                      </button>
+                    ))}
+                  </>
+                )}
+                <button
+                  onClick={session.signOut}
+                  className="w-full border-t border-line px-3 py-2 text-left text-xs font-medium text-accent hover:bg-accent-soft"
+                >
+                  Sign out
+                </button>
               </div>
             )}
           </div>

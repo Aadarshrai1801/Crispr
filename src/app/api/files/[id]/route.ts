@@ -1,18 +1,25 @@
 import { NextResponse } from "next/server";
 import { readFile } from "node:fs/promises";
 import { getDocument } from "@/lib/db";
+import { requireContext } from "@/lib/rbac";
+import { apiError } from "@/lib/api-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Params = { params: Promise<{ id: string }> };
 
-/** Serves the stored PDF to the inline viewer. */
-export async function GET(_request: Request, { params }: Params) {
-  const { id } = await params;
-  const doc = getDocument(id);
-  if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
+/**
+ * Serves the stored PDF to the inline viewer. Requires an authenticated
+ * session AND workspace membership for the document (N16) — previously any
+ * visitor with a document id could download the file.
+ */
+export async function GET(request: Request, { params }: Params) {
   try {
+    const { id } = await params;
+    const doc = getDocument(id);
+    if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    await requireContext(request, doc.workspace_id);
     const buffer = await readFile(doc.storage_path);
     return new Response(new Uint8Array(buffer), {
       headers: {
@@ -21,7 +28,7 @@ export async function GET(_request: Request, { params }: Params) {
         "Cache-Control": "private, max-age=3600",
       },
     });
-  } catch {
-    return NextResponse.json({ error: "Stored file is missing" }, { status: 410 });
+  } catch (err) {
+    return apiError(err);
   }
 }

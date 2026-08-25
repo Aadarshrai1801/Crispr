@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { originalDocumentAnswer } from "@/lib/retrieval";
 import { LlmNotConfiguredError } from "@/lib/llm";
+import { requireContext } from "@/lib/rbac";
+import { apiError } from "@/lib/api-helpers";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +19,14 @@ const BodySchema = z.object({
 /** FR-24 transparency: on-demand document-derived answer alongside any correction. */
 export async function POST(request: Request) {
   try {
+    // Blocker #1: this route previously had no auth; identity + membership now
+    // come from the session.
+    const wsId =
+      request.headers.get("x-crisp-workspace-id") ?? new URL(request.url).searchParams.get("workspace_id") ?? "ws_default";
+    const ctx = await requireContext(request, wsId);
+    const limit = checkRateLimit(`query:${ctx.userId}`, "llmQuery");
+    if (!limit.ok) return rateLimitResponse(limit);
+
     const body = BodySchema.parse(await request.json());
     let question = body.question ?? "";
     if (!question && body.query_log_id) {
@@ -24,16 +35,12 @@ export async function POST(request: Request) {
     }
     if (!question) return NextResponse.json({ error: "Could not resolve question" }, { status: 400 });
 
-    const payload = await originalDocumentAnswer("ws_default", body.document_ids, question);
+    const payload = await originalDocumentAnswer(wsId, body.document_ids, question);
     return NextResponse.json(payload);
   } catch (err) {
     if (err instanceof LlmNotConfiguredError) {
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
-    if (err instanceof z.ZodError) {
-      return NextResponse.json({ error: "Invalid request", details: err.issues }, { status: 400 });
-    }
-    console.error("[query.original]", err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : "Failed" }, { status: 500 });
+    return apiError(err);
   }
 }

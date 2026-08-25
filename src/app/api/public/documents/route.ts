@@ -8,6 +8,7 @@ import { findDocumentByHash, getDocument, insertDocument } from "@/lib/db";
 import { enqueueIngestion } from "@/lib/ingest";
 import { isSupportedUpload } from "@/lib/formats";
 import { ApiKeyError, authenticateApiKey, requireScope } from "@/lib/api-key-auth";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +20,9 @@ export async function POST(request: Request) {
   try {
     const ctx = authenticateApiKey(request);
     requireScope(ctx, "write");
+
+    const limit = checkRateLimit(`write:apikey:${ctx.key.id}`, "write");
+    if (!limit.ok) return rateLimitResponse(limit);
 
     const form = await request.formData();
     const file = form.get("file");

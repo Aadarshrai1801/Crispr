@@ -190,8 +190,8 @@ export interface VersionDiffSummary {
 function headers(): Record<string, string> {
   const h: Record<string, string> = {};
   try {
-    const u = localStorage.getItem("crisp-active-user");
-    if (u) h["x-crisp-user-id"] = u;
+    // Identity travels via the HttpOnly session cookie now (blocker #1);
+    // this header only selects the active workspace target.
     const w = localStorage.getItem("crisp-active-workspace");
     if (w) h["x-crisp-workspace-id"] = w;
   } catch {
@@ -222,7 +222,18 @@ async function handle<T>(res: Response): Promise<T> {
 }
 
 function request(path: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(path, { ...init, headers: { ...headers(), ...(init.headers ?? {}) } });
+  return fetch(path, { ...init, headers: { ...headers(), ...(init.headers ?? {}) } }).then((res) => {
+    // Blocker #1 UX: an expired/missing session bounces to the login screen,
+    // except for the auth endpoints themselves which report inline.
+    if (
+      res.status === 401 &&
+      typeof window !== "undefined" &&
+      !path.startsWith("/api/auth")
+    ) {
+      window.location.href = "/login";
+    }
+    return res;
+  });
 }
 
 function jsonRequest<T>(path: string, method: string, body?: unknown): Promise<T> {
@@ -235,10 +246,18 @@ function jsonRequest<T>(path: string, method: string, body?: unknown): Promise<T
 }
 
 export const api = {
+  /* ---- auth ---- */
+  login: (email: string, password: string) =>
+    jsonRequest<SessionPayload>("/api/auth/login", "POST", { email, password }),
+  devLoginAs: (userId: string) =>
+    jsonRequest<SessionPayload>("/api/auth/login", "POST", { user_id: userId }),
+  logout: () => request("/api/auth/logout", { method: "POST" }).then((r) => handle<{ ok: boolean }>(r)),
+  session: () => jsonRequest<SessionPayload & { dev_impersonation?: boolean }>("/api/auth/session", "GET"),
+
   /* ---- session ---- */
   users: () => jsonRequest<{ users: UserDto[] }>("/api/v2/users", "GET"),
-  workspaces: (userId?: string) =>
-    request(`/api/v2/workspaces${userId ? `?user_id=${encodeURIComponent(userId)}` : ""}`)
+  workspaces: () =>
+    request(`/api/v2/workspaces`)
       .then((r) => handle<{ workspaces: WorkspaceDto[] }>(r)),
   createWorkspace: (input: { name: string; approval_required?: boolean; plan_tier?: string }) =>
     jsonRequest<{ workspace: WorkspaceDto }>("/api/v2/workspaces", "POST", input),
@@ -363,6 +382,14 @@ export const api = {
   disconnectIntegration: (wsId: string, provider: string) =>
     request(`/api/v2/workspaces/${wsId}/integrations?provider=${encodeURIComponent(provider)}`, { method: "DELETE" }).then((r) => handle<{ ok: boolean }>(r)),
 };
+
+export interface SessionPayload {
+  user: UserDto;
+  workspaces: WorkspaceDto[];
+  workspaceId: string | null;
+  role: string | null;
+  dev_impersonation?: boolean;
+}
 
 export interface AnalyticsDto {
   workspace_id: string;

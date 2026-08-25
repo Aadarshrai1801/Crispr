@@ -17,6 +17,8 @@ export interface Session {
   setWorkspace: (id: string) => void;
   /** Reload workspaces (+ role) for the acting user after server-side changes. */
   refresh: () => void;
+  /** Clear the session cookie and return to the login screen. */
+  signOut: () => void;
 }
 
 interface SessionState {
@@ -29,12 +31,11 @@ interface SessionState {
 }
 
 /**
- * Demo-grade session for the local app: active user + workspace are chosen in
- * the sidebar and sent as headers on every API call. All authorization is
- * still enforced server-side (RBAC FR-34); these headers only identify the actor.
- *
- * State lives in one module-level store shared by every useSession() caller,
- * so switching user/workspace or saving settings updates the whole app live.
+ * Session store: identity comes from the HttpOnly session cookie (blocker #1).
+ * Hydration asks the server who we are; the workspace selector remains a
+ * client-side choice because the server re-validates membership on every call.
+ * The "act as" demo switcher only functions when the server reports
+ * dev_impersonation (non-production runtimes).
  */
 const INITIAL: SessionState = {
   userId: null,
@@ -82,37 +83,47 @@ async function fetchRole(workspaceId: string, userId: string): Promise<string | 
 
 async function hydrate() {
   try {
-    const storedUser = localStorage.getItem(USER_KEY);
     const storedWs = localStorage.getItem(WS_KEY);
-    const { users: allUsers } = await api.users();
-    // Resolve effective user: stored -> first available.
-    const effectiveUser =
-      storedUser && allUsers.some((x) => x.id === storedUser) ? storedUser : (allUsers[0]?.id ?? null);
-    const wsList = effectiveUser ? await api.workspaces(effectiveUser).then((r) => r.workspaces) : [];
+    const s = await api.session();
+    const wsList = s.workspaces;
     const activeWs =
-      storedWs && wsList.some((w) => w.id === storedWs) ? storedWs : (wsList[0]?.id ?? INITIAL.workspaceId);
-    const role = effectiveUser ? await fetchRole(activeWs, effectiveUser) : null;
+      storedWs && wsList.some((w) => w.id === storedWs) ? storedWs : (s.workspaceId ?? INITIAL.workspaceId);
+    const role = await fetchRole(activeWs, s.user.id);
+
+    let users = [s.user];
+    if (s.dev_impersonation) {
+      // Local/demo runtime only: load all accounts so RBAC is observable.
+      try {
+        const { users: allUsers } = await api.users();
+        if (allUsers.length) users = allUsers;
+      } catch {
+        /* keep single-user list */
+      }
+    }
+
     setState({
-      userId: effectiveUser,
-      users: allUsers,
+      userId: s.user.id,
+      users,
       workspaces: wsList,
       workspaceId: activeWs,
       role,
       hydrated: true,
     });
   } catch {
-    /* server unreachable — leave defaults */
+    /* unauthenticated or server unreachable — login page handles redirect */
     setState({ hydrated: true });
   }
 }
 
 function setUser(id: string) {
-  persist(USER_KEY, id);
-  setState({ userId: id, role: null });
+  if (id === state.userId) return;
   void (async () => {
     try {
-      const wsList = await api.workspaces(id).then((r) => r.workspaces);
-      // Keep the current workspace when shared with the new identity; otherwise reset to their first.
+      // Dev-only passwordless identity switch; server rejects it in production.
+      await api.devLoginAs(id);
+      persist(USER_KEY, id);
+      setState({ userId: id, role: null });
+      const wsList = await api.workspaces().then((r) => r.workspaces);
       const nextWs = wsList.some((w) => w.id === state.workspaceId)
         ? state.workspaceId
         : (wsList[0]?.id ?? state.workspaceId);
@@ -120,7 +131,7 @@ function setUser(id: string) {
       const role = await fetchRole(nextWs, id);
       setState({ workspaces: wsList, workspaceId: nextWs, role });
     } catch {
-      /* keep previous list */
+      /* keep previous identity */
     }
   })();
 }
@@ -136,7 +147,7 @@ function refresh() {
   if (!uid) return;
   void (async () => {
     try {
-      const wsList = await api.workspaces(uid).then((r) => r.workspaces);
+      const wsList = await api.workspaces().then((r) => r.workspaces);
       const patch: Partial<SessionState> = { workspaces: wsList };
       if (wsList.length && !wsList.some((w) => w.id === state.workspaceId)) {
         // Active workspace disappeared (e.g. membership revoked) — fall back to their first.
@@ -154,6 +165,21 @@ function refresh() {
   })();
 }
 
+function signOut() {
+  void api
+    .logout()
+    .catch(() => undefined)
+    .finally(() => {
+      try {
+        localStorage.removeItem(USER_KEY);
+        localStorage.removeItem(WS_KEY);
+      } catch {
+        /* ignore */
+      }
+      if (typeof window !== "undefined") window.location.href = "/login";
+    });
+}
+
 export function useSession(): Session {
   const snapshot = useSyncExternalStore(
     subscribe,
@@ -161,7 +187,7 @@ export function useSession(): Session {
     () => INITIAL
   );
   return useMemo<Session>(
-    () => ({ ...snapshot, setUser, setWorkspace, refresh }),
+    () => ({ ...snapshot, setUser, setWorkspace, refresh, signOut }),
     [snapshot]
   );
 }

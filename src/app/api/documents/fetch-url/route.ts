@@ -10,6 +10,8 @@ import { enqueueIngestion } from "@/lib/ingest";
 import { audit } from "@/lib/audit";
 import { requireContext, requireContributor } from "@/lib/rbac";
 import { apiError } from "@/lib/api-helpers";
+import { safeFetch } from "@/lib/ssrf";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,11 +36,17 @@ export async function POST(request: Request) {
     const ctx = requireContext(request, wsId);
     requireContributor(ctx);
 
+    // Blocker #4: uploads trigger OCR/embedding compute — throttle per user.
+    const limit = checkRateLimit(`write:${ctx.userId}`, "write");
+    if (!limit.ok) return rateLimitResponse(limit);
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60_000);
     let response: Response;
     try {
-      response = await fetch(body.url, { signal: controller.signal, redirect: "follow" });
+      // Blocker #3: validated per hop — redirects are followed manually and
+      // each target is re-checked against private/link-local ranges.
+      response = await safeFetch(body.url, { signal: controller.signal });
     } finally {
       clearTimeout(timer);
     }

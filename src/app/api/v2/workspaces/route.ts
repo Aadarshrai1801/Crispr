@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getUser, insertWorkspace, listWorkspacesForUser } from "@/lib/db";
+import { insertWorkspace, listWorkspacesForUser } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { resolveUserId } from "@/lib/rbac";
 import { apiError, json } from "@/lib/api-helpers";
@@ -39,10 +39,10 @@ export async function POST(request: Request) {
 
 export async function GET(request: Request) {
   try {
-    // Explicit ?user_id= (sent by the client switcher) wins; header identity is the fallback.
-    const explicitUserId = new URL(request.url).searchParams.get("user_id");
-    const userId = explicitUserId && getUser(explicitUserId) ? explicitUserId : resolveUserId(request);
-    const workspaces = listWorkspacesForUser(userId);
+    // Blocker #1 hardening: this endpoint used to accept an arbitrary ?user_id=
+    // and enumerate anyone's workspaces. It now only ever lists the session
+    // user's own workspaces.
+    const workspaces = listWorkspacesForUser(resolveUserId(request));
     return json({ workspaces });
   } catch (err) {
     return apiError(err);

@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { answerQuestion, readyDocumentIds, resolveQueryScope } from "@/lib/retrieval";
-import { defaultUserId, defaultWorkspaceId, getDocument, listDocuments } from "@/lib/db";
+import { defaultWorkspaceId, getDocument, listDocuments } from "@/lib/db";
 import { LlmNotConfiguredError } from "@/lib/llm";
 import { requireContext } from "@/lib/rbac";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,8 +24,12 @@ export async function POST(request: Request) {
     const wsId =
       request.headers.get("x-crisp-workspace-id") ?? new URL(request.url).searchParams.get("workspace_id") ?? defaultWorkspaceId();
 
-    // FR-34: any member (including Viewer) can query documents.
-    await requireContext(request, wsId);
+    // FR-34: any member (including Viewer) can query documents. Identity now
+    // comes from the session cookie (blocker #1) — headers are untrusted.
+    const ctx = await requireContext(request, wsId);
+
+    const limit = checkRateLimit(`query:${ctx.userId}`, "llmQuery");
+    if (!limit.ok) return rateLimitResponse(limit);
 
     let requested = body.workspace_wide ? readyDocumentIds(wsId) : (body.document_ids ?? []);
     if (!body.workspace_wide) {
@@ -46,7 +51,7 @@ export async function POST(request: Request) {
 
     const payload = await answerQuestion({
       workspaceId: wsId,
-      userId: request.headers.get("x-crisp-user-id") ?? defaultUserId(),
+      userId: ctx.userId,
       documentIds: scope.documentIds,
       question: body.question,
     });

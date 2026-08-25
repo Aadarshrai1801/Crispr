@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { answerQuestion } from "@/lib/retrieval";
 import { defaultWorkspaceId } from "@/lib/db";
 import { config } from "@/lib/config";
+import { verifySlackSignature } from "@/lib/slack-verify";
+import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,16 +21,31 @@ interface SlackCommand {
  * (e.g. /crisp) at this URL; set SLACK_DEFAULT_WORKSPACE_ID to the workspace
  * whose documents should be queried.
  *
+ * Blocker #2: every request is HMAC-verified against SLACK_SIGNING_SECRET with
+ * a 5-minute replay window BEFORE the payload is parsed or answered. Requests
+ * without a valid signature are rejected with 401.
+ *
  * Responses include citations and — per FR-42 — a visible caveat whenever the
  * confidence score falls below the workspace threshold, so low-confidence
  * answers are never treated as authoritative downstream.
  */
 export async function POST(request: Request) {
   try {
-    const form = await request.formData().catch(() => null);
-    if (!form) return NextResponse.json({ error: "Expected application/x-www-form-urlencoded" }, { status: 400 });
+    const rawBody = await request.text();
+    const rejection = verifySlackSignature({
+      signingSecret: config.slackSigningSecret,
+      timestamp: request.headers.get("x-slack-request-timestamp") ?? "",
+      signature: request.headers.get("x-slack-signature") ?? "",
+      body: rawBody,
+    });
+    if (rejection) {
+      return NextResponse.json({ error: `Unauthorized: ${rejection}` }, { status: 401 });
+    }
 
-    const payload = Object.fromEntries(form.entries()) as unknown as Record<string, string>;
+    const limit = checkRateLimit(`slack:${clientIp(request)}`, "llmQuery");
+    if (!limit.ok) return rateLimitResponse(limit);
+
+    const payload = Object.fromEntries(new URLSearchParams(rawBody).entries()) as unknown as Record<string, string>;
 
     // Slack URL verification handshake
     if (payload.type === "url_verification") {
@@ -54,7 +71,7 @@ export async function POST(request: Request) {
 
     const result = await answerQuestion({
       workspaceId: wsId,
-      userId: request.headers.get("x-crisp-user-id") || "slack_bot",
+      userId: "slack_bot",
       documentIds: docIds.slice(0, 50),
       question,
     });
