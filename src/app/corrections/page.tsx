@@ -4,14 +4,17 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowClockwise,
   CaretDown,
+  Check,
+  ChatCircleDots,
   ClockCounterClockwise,
   PencilSimple,
   SealCheck,
+  ShieldWarning,
   Trash,
   XCircle,
 } from "@phosphor-icons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { api, type CorrectionDto, type DocumentDto } from "@/lib/client/api";
+import { api, type CommentDto, type CorrectionDto, type DocumentDto } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Chip, EmptyState, Skeleton } from "@/components/ui/primitives";
 import { cn, formatDate } from "@/lib/utils";
@@ -24,7 +27,9 @@ export default function CorrectionsPage() {
   const [corrections, setCorrections] = useState<CorrectionDto[] | null>(null);
   const [docs, setDocs] = useState<DocumentDto[]>([]);
   const [docFilter, setDocFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "retired" | "superseded">("all");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | "active" | "pending" | "rejected" | "retired" | "superseded" | "review"
+  >("all");
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [histories, setHistories] = useState<Record<string, CorrectionWithHistory[]>>({});
@@ -43,14 +48,16 @@ export default function CorrectionsPage() {
   }, []);
 
   const nameById = useMemo(
-    () => Object.fromEntries(docs.map((d) => [d.id, d.filename.replace(/\.pdf$/i, "")])),
+    () => Object.fromEntries(docs.map((d) => [d.id, d.filename.replace(/\.[a-z0-9]+$/i, "")])),
     [docs]
   );
 
   const filtered = useMemo(() => {
     if (!corrections) return null;
     return corrections.filter((c) => {
-      if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (statusFilter === "review") {
+        if (!c.needs_version_review) return false;
+      } else if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (docFilter === "workspace") {
         if (c.scope !== "workspace") return false;
       } else if (docFilter !== "all" && c.document_id !== docFilter) {
@@ -84,6 +91,16 @@ export default function CorrectionsPage() {
     setBusyId(c.id);
     try {
       await api.editCorrection(c.id, { action: "retire" });
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function reviewVersion(c: CorrectionDto, outcome: "keep" | "reflag") {
+    setBusyId(c.id);
+    try {
+      await api.editCorrection(c.id, { action: outcome === "keep" ? "version_review_keep" : "version_review_reflag" });
       await load();
     } finally {
       setBusyId(null);
@@ -136,7 +153,7 @@ export default function CorrectionsPage() {
           ))}
         </select>
         <div className="flex gap-1">
-          {(["all", "active", "superseded", "retired"] as const).map((s) => (
+          {(["all", "pending", "active", "rejected", "superseded", "retired", "review"] as const).map((s) => (
             <button
               key={s}
               onClick={() => setStatusFilter(s)}
@@ -146,7 +163,7 @@ export default function CorrectionsPage() {
                 statusFilter === s ? "bg-accent-soft font-medium text-accent-strong" : "text-ink-soft hover:bg-surface-hover"
               )}
             >
-              {s}
+              {s === "review" ? "version review" : s}
             </button>
           ))}
         </div>
@@ -170,18 +187,30 @@ export default function CorrectionsPage() {
           {filtered.map((c) => {
             const isOpen = expanded === c.id;
             const history = histories[c.id];
+            const statusTone =
+              c.status === "active" ? "accent" : c.status === "pending" ? "warn" : c.status === "rejected" ? "danger" : "neutral";
             return (
               <motion.div
                 layout={!reduce}
                 key={c.id}
                 className={cn(
                   "rounded-2xl border bg-surface transition-colors duration-200",
-                  c.status === "active" ? "border-line" : "border-line opacity-70"
+                  ["active", "pending"].includes(c.status) ? "border-line" : "border-line opacity-70"
                 )}
               >
                 <div className="p-4">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <Chip tone={c.status === "active" ? "accent" : "neutral"}>{c.status}</Chip>
+                    <Chip tone={statusTone}>{c.status}</Chip>
+                    {c.status === "pending" && (
+                      <span className="inline-flex items-center gap-1 text-[11px] text-warn">
+                        <ShieldWarning size={11} weight="fill" /> awaiting approval — not yet affecting retrieval
+                      </span>
+                    )}
+                    {c.status === "rejected" && c.rejection_reason && (
+                      <span className="text-[11px] text-danger" title={c.rejection_reason}>
+                        rejected: {c.rejection_reason.slice(0, 60)}{c.rejection_reason.length > 60 ? "…" : ""}
+                      </span>
+                    )}
                     <Chip>{c.scope === "workspace" ? "workspace-wide" : nameById[c.document_id ?? ""] ?? "document"}</Chip>
                     {(c.topic_tags ?? []).map((t) => (
                       <Chip key={t}>{t}</Chip>
@@ -206,9 +235,30 @@ export default function CorrectionsPage() {
 
                   {c.note && <p className="mt-2 text-xs italic leading-relaxed text-ink-faint">Note: {c.note}</p>}
 
+                  {/* FR-39: version-update review banner */}
+                  {c.needs_version_review === 1 && (
+                    <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-xl border border-warn/30 bg-warn-soft px-3 py-2">
+                      <ShieldWarning size={13} weight="fill" className="text-warn" />
+                      <p className="min-w-0 flex-1 text-[11px] leading-snug text-warn">
+                        The source document was updated after this correction was made. Does it still apply?
+                      </p>
+                      <Button size="sm" disabled={busyId === c.id} onClick={() => void reviewVersion(c, "keep")}>
+                        <Check size={11} weight="bold" /> Still applies
+                      </Button>
+                      <Button size="sm" disabled={busyId === c.id} onClick={() => void reviewVersion(c, "reflag")}>
+                        Re-flag
+                      </Button>
+                    </div>
+                  )}
+
                   <footer className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-line pt-2.5">
                     <span className="text-[11px] text-ink-faint">
-                      corrected {formatDate(c.created_at)} · by {c.submitted_by.startsWith("user_") ? "you" : c.submitted_by}
+                      {c.status === "pending"
+                        ? "submitted"
+                        : c.status === "rejected"
+                          ? "rejected"
+                          : `live since ${formatDate(c.approved_at ?? c.created_at)}`}{" "}
+                      · by {c.submitted_by.startsWith("user_") ? c.submitted_by.replace(/^user_/, "") : c.submitted_by}
                     </span>
                     <span className="ml-auto flex items-center gap-1">
                       {c.status === "active" && (
@@ -221,6 +271,7 @@ export default function CorrectionsPage() {
                           </Button>
                         </>
                       )}
+                      <CommentToggle correctionId={c.id} />
                       <Button variant="ghost" size="sm" onClick={() => void openHistory(c)}>
                         <ClockCounterClockwise size={12} weight="light" />
                         History
@@ -285,6 +336,83 @@ export default function CorrectionsPage() {
       )}
     </div>
   );
+}
+
+function CommentToggle({ correctionId }: { correctionId: string }) {
+  const [open, setOpen] = useState(false);
+  const [comments, setComments] = useState<CommentDto[] | null>(null);
+  const [text, setText] = useState("");
+  const reduce = useReducedMotion();
+
+  async function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next) {
+      try {
+        setComments(await api.comments(correctionId).then((r) => r.comments));
+      } catch {
+        setComments([]);
+      }
+    }
+  }
+
+  return (
+    <>
+      <Button variant="ghost" size="sm" onClick={() => void toggle()}>
+        <ChatCircleDots size={12} weight="light" />
+        Discussion{comments ? ` (${comments.length})` : ""}
+      </Button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={reduce ? false : { opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.25 }}
+            className="w-full overflow-hidden"
+          >
+            <div className="mt-1 space-y-2 rounded-xl bg-bg/60 p-3">
+              {comments === null ? (
+                <Skeleton className="h-12" />
+              ) : comments.length === 0 ? (
+                <p className="text-xs text-ink-faint">No discussion yet — visible to all workspace members.</p>
+              ) : (
+                comments.map((cm) => (
+                  <div key={cm.id} className="rounded-lg border border-line bg-surface px-2.5 py-2">
+                    <p className="font-mono text-[9px] uppercase tracking-wider text-ink-faint">
+                      {cm.author_id.replace(/^user_/, "")} · {formatDate(cm.created_at)}
+                    </p>
+                    <p className="mt-0.5 text-xs leading-relaxed">{cm.body}</p>
+                  </div>
+                ))
+              )}
+              <div className="flex gap-2">
+                <input
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void post()}
+                  placeholder="Add a comment…"
+                  className="focus-ring h-8 flex-1 rounded-lg border border-line-strong bg-surface px-2.5 text-xs"
+                />
+                <Button size="sm" disabled={!text.trim()} onClick={() => void post()}>Post</Button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+
+  async function post() {
+    if (!text.trim()) return;
+    try {
+      await api.addComment(correctionId, text.trim());
+      setText("");
+      setComments(await api.comments(correctionId).then((r) => r.comments));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Comment failed");
+    }
+  }
 }
 
 function EditModal({

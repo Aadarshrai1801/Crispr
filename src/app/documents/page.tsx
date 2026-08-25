@@ -1,39 +1,75 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowClockwise,
   CheckCircle,
   FileText,
+  LinkSimple,
   Plus,
   Trash,
   Warning,
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
-import { api, type DocumentDto } from "@/lib/client/api";
+import { api, type DocumentDto, type VersionDiffSummary } from "@/lib/client/api";
 import { useActiveDocuments } from "@/lib/client/use-active-documents";
 import { Button } from "@/components/ui/button";
 import { Chip, EmptyState, Skeleton, StatusDot } from "@/components/ui/primitives";
-import { cn } from "@/lib/utils";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 
 type UploadState = { name: string; file: File; error?: string; duplicateOf?: DocumentDto };
+
+const ACCEPT = ".pdf,.docx,.xlsx,.xls,.eml,.msg,application/pdf";
+
+interface VersionResult {
+  version: { id: string; version_number: number };
+  diff_summary: VersionDiffSummary;
+  corrections_needing_review: Array<{ id: string; question_text: string }>;
+}
 
 export default function DocumentsPage() {
   const [docs, setDocs] = useState<DocumentDto[] | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [uploads, setUploads] = useState<UploadState[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const versionInputRef = useRef<HTMLInputElement>(null);
+  const [versionTarget, setVersionTarget] = useState<DocumentDto | null>(null);
+  const [versionResult, setVersionResult] = useState<VersionResult | null>(null);
+  const [versionBusy, setVersionBusy] = useState(false);
+  const [fetchNotice, setFetchNotice] = useState<string | null>(null);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const { activeIds, setActiveIds, hydrated } = useActiveDocuments();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const load = useCallback(() => api.listDocuments().then(setDocs).catch(() => setDocs([])), []);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // FR-49 support: browser extension hands off a PDF URL via ?fetch_url=
+  useEffect(() => {
+    const fetchUrl = searchParams.get("fetch_url");
+    if (!fetchUrl) return;
+    setFetchNotice(`Ingesting from URL… ${fetchUrl}`);
+    api
+      .fetchUrl(fetchUrl)
+      .then((d) => {
+        setFetchNotice(
+          d.already_ingested ? `Already in your library as “${d.filename}”.` : `Ingesting “${d.filename}” from the link…`
+        );
+        router.replace("/documents");
+        void load();
+      })
+      .catch((err) => {
+        setFetchNotice(err instanceof Error ? err.message : "Could not ingest that URL");
+        router.replace("/documents");
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Poll while anything is processing
   useEffect(() => {
@@ -89,7 +125,7 @@ export default function DocumentsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Documents</h1>
           <p className="mt-1 text-[13px] text-ink-soft">
-            Upload PDFs to query them. Select which ones are active in chat.
+            Upload PDFs, Word, Excel, and email exports to query them. Select which ones are active in chat.
           </p>
         </div>
         {anyProcessing && (
@@ -98,6 +134,12 @@ export default function DocumentsPage() {
           </Chip>
         )}
       </header>
+
+      {fetchNotice && (
+        <div className="mb-3 flex items-center gap-2 rounded-xl border border-accent-line bg-accent-soft px-4 py-3 text-[13px] text-accent-strong">
+          <LinkSimple size={15} className="shrink-0" /> {fetchNotice}
+        </div>
+      )}
 
       {/* Dropzone */}
       <div
@@ -123,14 +165,16 @@ export default function DocumentsPage() {
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf,application/pdf"
+          accept={ACCEPT}
           multiple
           hidden
           onChange={(e) => e.target.files && handleFiles(e.target.files)}
         />
         <Plus size={20} weight="light" className="mx-auto mb-2 text-ink-faint" />
-        <p className="text-[13px] font-medium">Drop PDFs here or click to browse</p>
-        <p className="mt-1 text-xs text-ink-faint">Up to 200MB per file. Scanned pages fall back to OCR.</p>
+        <p className="text-[13px] font-medium">Drop files here or click to browse</p>
+        <p className="mt-1 text-xs text-ink-faint">
+          PDF · DOCX · XLSX · EML · MSG — up to 200MB. Tables are preserved; scanned pages fall back to OCR.
+        </p>
       </div>
 
       {/* Upload issues / duplicates */}
@@ -231,6 +275,7 @@ export default function DocumentsPage() {
                         {doc.status}
                       </span>
                       {doc.page_count > 0 && <span>{doc.page_count} pages</span>}
+                      <span>v{doc.version_number}</span>
                       <span>{formatDate(doc.created_at)}</span>
                     </div>
                     {doc.ocr_warning === 1 && doc.status === "ready" && (
@@ -243,15 +288,29 @@ export default function DocumentsPage() {
                     )}
                   </div>
 
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label={`Delete ${doc.filename}`}
-                    onClick={() => void handleDelete(doc.id)}
-                    className="opacity-0 transition-opacity duration-200 group-hover:opacity-100"
-                  >
-                    <Trash size={14} weight="light" />
-                  </Button>
+                  <div className="flex shrink-0 flex-col items-end gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Upload a new version of this document"
+                      disabled={doc.status !== "ready" || versionBusy}
+                      onClick={() => {
+                        setVersionTarget(doc);
+                        setVersionResult(null);
+                        setTimeout(() => versionInputRef.current?.click(), 0);
+                      }}
+                    >
+                      <ArrowClockwise size={13} weight="light" /> New version
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Delete ${doc.filename}`}
+                      onClick={() => void handleDelete(doc.id)}
+                    >
+                      <Trash size={14} weight="light" />
+                    </Button>
+                  </div>
                 </div>
               </div>
             );
@@ -269,6 +328,105 @@ export default function DocumentsPage() {
             Chat
           </button>
         </p>
+      )}
+
+      {/* Hidden input for new-version uploads (FR-39) */}
+      <input
+        ref={versionInputRef}
+        type="file"
+        accept={ACCEPT}
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (!file || !versionTarget) return;
+          setVersionBusy(true);
+          api
+            .uploadNewVersion(versionTarget.id, file)
+            .then((res) => setVersionResult(res))
+            .catch((err) => setErrorBanner(err instanceof Error ? err.message : "Version upload failed"))
+            .finally(() => {
+              setVersionBusy(false);
+              void load();
+            });
+        }}
+      />
+      {errorBanner && (
+        <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-danger/25 bg-danger-soft px-4 py-2.5 text-[13px] text-danger shadow-[var(--shadow-card)]">
+          {errorBanner}
+        </div>
+      )}
+
+      {/* Version diff modal */}
+      {versionResult && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4 backdrop-blur-sm"
+          onClick={(e) => e.target === e.currentTarget && setVersionResult(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-line bg-surface p-5 shadow-[var(--shadow-card)]">
+            <h2 className="text-sm font-semibold">
+              New version detected — {versionResult.version.version_number > 0 && `v${versionResult.version.version_number} uploaded`}
+            </h2>
+            {(() => {
+              const d = versionResult.diff_summary;
+              return (
+                <>
+                  <p className="mt-1 text-xs text-ink-faint">
+                    {d.stats.material_changes} material change{d.stats.material_changes === 1 ? "" : "s"} ·{" "}
+                    {d.stats.pages_before} → {d.stats.pages_after} pages
+                  </p>
+                  <DiffList label="Added sections" items={d.added} tone="accent" emptyText="No new sections." />
+                  <DiffList label="Removed sections" items={d.removed} tone="danger" emptyText="Nothing removed." />
+                  <DiffList label="Modified sections" items={d.modified} tone="warn" emptyText="No modified sections." />
+                </>
+              );
+            })()}
+
+            <div className="mt-4 rounded-xl border border-line bg-bg/60 p-3">
+              <p className="text-xs font-medium">Corrections to review ({versionResult.corrections_needing_review.length})</p>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-ink-faint">
+                Existing corrections on this document are flagged for review — confirm whether each still applies, is now
+                resolved by the update, or needs re-flagging. Manage them from the Corrections page.
+              </p>
+              <ul className="mt-2 space-y-1">
+                {versionResult.corrections_needing_review.slice(0, 5).map((c) => (
+                  <li key={c.id} className="truncate text-[11px] text-ink-soft">“{c.question_text}”</li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setVersionResult(null)}>Close</Button>
+              <Button variant="primary" onClick={() => router.push("/corrections")}>
+                Review corrections
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiffList({ label, items, tone, emptyText }: { label: string; items: string[]; tone: "accent" | "danger" | "warn"; emptyText: string }) {
+  return (
+    <div className="mt-3">
+      <p className={cn("font-mono text-[9px] uppercase tracking-wider", tone === "accent" && "text-accent-strong", tone === "danger" && "text-danger", tone === "warn" && "text-warn")}>
+        {label} ({items.length})
+      </p>
+      {items.length === 0 ? (
+        <p className="mt-1 text-[11px] text-ink-faint">{emptyText}</p>
+      ) : (
+        <ul className="mt-1 space-y-0.5">
+          {items.slice(0, 8).map((s) => (
+            <li key={s} className="truncate rounded-md bg-surface-2 px-2 py-1 text-[11px] text-ink-soft" title={s}>
+              {s}
+            </li>
+          ))}
+          {items.length > 8 && <li className="text-[11px] text-ink-faint">+{items.length - 8} more…</li>}
+        </ul>
       )}
     </div>
   );

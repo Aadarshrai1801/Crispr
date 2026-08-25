@@ -374,7 +374,7 @@ function SuggestionCard({ suggestion: s, onChanged }: { suggestion: SuggestedCor
       )}
       {pattern.type === "cross_doc" && (
         <p className="mt-2.5 text-xs leading-relaxed text-ink-soft">
-          Similar passage found in another document ({Math.round((pattern.matches[0]?.similarity ?? 0) * 100)}% match).
+          Similar passage found in another document ({Math.round((pattern.matches?.[0]?.similarity ?? 0) * 100)}% match).
         </p>
       )}
 

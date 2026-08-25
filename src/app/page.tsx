@@ -54,6 +54,7 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<Phase>("corrections");
   const [error, setError] = useState<string | null>(null);
+  const [allDocsMode, setAllDocsMode] = useState(false);
 
   const [feedbackTarget, setFeedbackTarget] = useState<{ turnId: string; result: QueryResultDto } | null>(null);
   const [correctionDraft, setCorrectionDraft] = useState<(CorrectionDraft & { exhausted?: boolean }) | null>(null);
@@ -76,7 +77,20 @@ export default function ChatPage() {
   useEffect(() => {
     if (!hydrated || !docs) return;
     if (activeIds.length === 0 && readyDocs.length > 0) setActiveIds([readyDocs[0].id]);
-  }, [hydrated, docs, readyDocs, activeIds.length, setActiveIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, docs]);
+
+  // Browser-extension handoff: /?doc=<id> preselects the freshly ingested document.
+  useEffect(() => {
+    const docParam = new URLSearchParams(window.location.search).get("doc");
+    if (!docParam || !docs) return;
+    if (docs.some((d) => d.id === docParam)) {
+      setAllDocsMode(false);
+      setActiveIds([docParam]);
+    }
+    window.history.replaceState({}, "", window.location.pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docs]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: reduce ? "auto" : "smooth" });
@@ -96,19 +110,23 @@ export default function ChatPage() {
 
   const activeReadyIds = useMemo(() => activeIds.filter((id) => readyDocs.some((d) => d.id === id)), [activeIds, readyDocs]);
   const namesById = useMemo(() => Object.fromEntries((docs ?? []).map((d) => [d.id, d.filename])), [docs]);
+  /** FR-37: workspace-wide multi-document querying across every ready document. */
+  const queryDocCount = allDocsMode ? readyDocs.length : activeReadyIds.length;
 
   const updateTurn = useCallback((turnId: string, fn: (t: Turn) => Turn) => {
     setTurns((ts) => ts.map((t) => (t.id === turnId ? fn(t) : t)));
   }, []);
 
   async function ask(question: string) {
-    if (!activeReadyIds.length || busy) return;
+    if (queryDocCount === 0 || busy) return;
     setInput("");
     setError(null);
     setBusy(true);
     setPhase("corrections");
     try {
-      const result = await api.ask(question, activeReadyIds);
+      const result = allDocsMode
+        ? await api.askWorkspaceWide(question)
+        : await api.ask(question, activeReadyIds);
       setTurns((ts) => [...ts, { id: result.query_log_id, question, variants: [result] }]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -190,7 +208,8 @@ export default function ChatPage() {
     }
     setLoadingOriginal(key);
     try {
-      const original = await api.originalAnswer(turn.question, activeReadyIds);
+      const ids = allDocsMode ? readyDocs.map((d) => d.id) : activeReadyIds;
+      const original = await api.originalAnswer(turn.question, ids);
       setOriginals((o) => ({ ...o, [key]: original }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not generate original answer");
@@ -222,28 +241,45 @@ export default function ChatPage() {
             <ArrowRight size={11} weight="bold" />
           </Link>
         ) : (
-          <div className="flex flex-1 items-center gap-1.5 overflow-x-auto pb-0.5">
-            {readyDocs.map((d) => {
-              const on = activeReadyIds.includes(d.id);
-              return (
-                <button
-                  key={d.id}
-                  onClick={() => setActiveIds(on ? activeReadyIds.filter((x) => x !== d.id) : [...activeReadyIds, d.id])}
-                  aria-pressed={on}
-                  title={d.filename}
-                  className={cn(
-                    "focus-ring inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1 text-xs transition-colors duration-150",
-                    on
-                      ? "border-accent-line bg-accent-soft font-medium text-accent-strong"
-                      : "border-line bg-surface text-ink-soft hover:border-line-strong"
-                  )}
-                >
-                  <FileText size={11} weight={on ? "fill" : "regular"} />
-                  <span className="max-w-[180px] truncate">{d.filename.replace(/\.pdf$/i, "")}</span>
-                </button>
-              );
-            })}
-          </div>
+          <>
+            <button
+              onClick={() => setAllDocsMode((v) => !v)}
+              aria-pressed={allDocsMode}
+              title={allDocsMode ? "Querying every ready document in the workspace (FR-37)" : "Query across ALL documents in the workspace"}
+              className={cn(
+                "focus-ring inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition-colors duration-150",
+                allDocsMode
+                  ? "border-accent bg-accent text-on-accent"
+                  : "border-line-strong bg-surface text-ink-soft hover:border-line-strong hover:text-ink"
+              )}
+            >
+              All documents ({readyDocs.length})
+            </button>
+            {!allDocsMode && (
+              <div className="flex flex-1 items-center gap-1.5 overflow-x-auto pb-0.5">
+                {readyDocs.map((d) => {
+                  const on = activeReadyIds.includes(d.id);
+                  return (
+                    <button
+                      key={d.id}
+                      onClick={() => setActiveIds(on ? activeReadyIds.filter((x) => x !== d.id) : [...activeReadyIds, d.id])}
+                      aria-pressed={on}
+                      title={d.filename}
+                      className={cn(
+                        "focus-ring inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1 text-xs transition-colors duration-150",
+                        on
+                          ? "border-accent-line bg-accent-soft font-medium text-accent-strong"
+                          : "border-line bg-surface text-ink-soft hover:border-line-strong"
+                      )}
+                    >
+                      <FileText size={11} weight={on ? "fill" : "regular"} />
+                      <span className="max-w-[180px] truncate">{d.filename.replace(/\.[a-z0-9]+$/i, "")}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
         <Button variant="ghost" size="sm" onClick={() => (window.location.href = "/documents")} className="hidden sm:inline-flex">
           <Gear size={13} weight="light" /> Manage
@@ -292,7 +328,7 @@ export default function ChatPage() {
                         <button
                           key={ex}
                           onClick={() => void ask(ex)}
-                          disabled={!activeReadyIds.length}
+                          disabled={!queryDocCount}
                           className="focus-ring group flex items-center justify-between gap-3 rounded-xl border border-line bg-surface px-3.5 py-2.5 text-left text-[13px] text-ink-soft transition-all duration-200 hover:border-accent-line hover:text-ink disabled:opacity-40"
                         >
                           {ex}
@@ -400,18 +436,22 @@ export default function ChatPage() {
                 }}
                 rows={Math.min(5, Math.max(1, input.split("\n").length))}
                 placeholder={
-                  activeReadyIds.length
-                    ? `Ask about ${activeReadyIds.length === 1 ? namesById[activeReadyIds[0]]?.replace(/\.pdf$/i, "") ?? "this document" : `${activeReadyIds.length} documents`}…`
+                  queryDocCount
+                    ? allDocsMode
+                      ? `Ask across all ${readyDocs.length} documents…`
+                      : queryDocCount === 1
+                        ? `Ask about ${namesById[activeReadyIds[0]]?.replace(/\.[a-z0-9]+$/i, "") ?? "this document"}…`
+                        : `Ask across ${queryDocCount} documents…`
                     : "Select a ready document above to start…"
                 }
-                disabled={!activeReadyIds.length}
+                disabled={!queryDocCount}
                 className="focus-ring max-h-[140px] min-h-[44px] flex-1 resize-none rounded-2xl border border-line-strong bg-surface px-4 py-2.5 text-[13.5px] leading-relaxed placeholder:text-ink-faint disabled:opacity-50"
               />
               <Button
                 type="submit"
                 variant="primary"
                 aria-label="Send question"
-                disabled={!input.trim() || !activeReadyIds.length || busy}
+                disabled={!input.trim() || !queryDocCount || busy}
                 className="h-[44px] w-[44px] rounded-2xl p-0"
               >
                 <PaperPlaneRight size={16} weight="fill" />

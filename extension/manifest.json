@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Crisp — query this PDF",
+  "version": "1.0.0",
+  "description": "Query the PDF open in the current tab against your Crispr workspace without leaving the page.",
+  "permissions": ["activeTab", "storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Ask Crispr about this PDF"
+  },
+  "icons": {}
+}

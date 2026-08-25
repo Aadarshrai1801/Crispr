@@ -29,9 +29,13 @@ export function useSession() {
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
+    let storedUser: string | null = null;
     try {
       const u = localStorage.getItem(USER_KEY);
-      if (u) setUserIdState(u);
+      if (u) {
+        storedUser = u;
+        setUserIdState(u);
+      }
       const w = localStorage.getItem(WS_KEY);
       if (w) setWorkspaceIdState(w);
     } catch {
@@ -40,20 +44,25 @@ export function useSession() {
 
     void (async () => {
       try {
-        const [{ users: allUsers }, { workspaces: allWs }] = await Promise.all([api.users(), api.workspaces(u ?? undefined)]);
+        const { users: allUsers } = await api.users();
         setUsers(allUsers);
-        setWorkspaces(allWs);
-        // Resolve effective user: stored -> first non-demo? keep stored if valid.
-        const effectiveUser = u && allUsers.some((x) => x.id === u) ? u : allUsers[0]?.id ?? null;
-        if (!u && effectiveUser) setUserIdState(effectiveUser);
+        // Resolve effective user: stored -> first available.
+        const effectiveUser =
+          storedUser && allUsers.some((x) => x.id === storedUser) ? storedUser : (allUsers[0]?.id ?? null);
+        if (!storedUser && effectiveUser) setUserIdState(effectiveUser);
         const wsList = effectiveUser ? await api.workspaces(effectiveUser).then((r) => r.workspaces) : [];
-        const merged = wsList.length ? wsList : allWs;
-        setWorkspaces(merged);
-        const storedWs = localStorage.getItem(WS_KEY);
-        if (storedWs && merged.some((w) => w.id === storedWs)) {
+        setWorkspaces(wsList);
+        const storedWs = (() => {
+          try {
+            return localStorage.getItem(WS_KEY);
+          } catch {
+            return null;
+          }
+        })();
+        if (storedWs && wsList.some((w) => w.id === storedWs)) {
           setWorkspaceIdState(storedWs);
-        } else if (merged[0]) {
-          setWorkspaceIdState(merged[0].id);
+        } else if (wsList[0]) {
+          setWorkspaceIdState(wsList[0].id);
         }
       } catch {
         /* server unreachable — leave defaults */

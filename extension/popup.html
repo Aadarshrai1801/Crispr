@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font-family: system-ui, sans-serif; width: 300px; margin: 0; padding: 14px; background: #16181d; color: #e8eaed; }
+      h1 { font-size: 14px; margin: 0 0 4px; }
+      p { font-size: 11.5px; color: #9aa0a6; margin: 4px 0 10px; line-height: 1.45; }
+      input { width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 8px; border: 1px solid #3c4043;
+              background: #202124; color: #e8eaed; font-size: 12px; }
+      button { width: 100%; margin-top: 8px; padding: 8px; border-radius: 8px; border: 0; cursor: pointer;
+               background: #4f8cff; color: white; font-weight: 600; font-size: 12.5px; }
+      button:disabled { opacity: .5; cursor: default; }
+      #status { font-size: 11px; margin-top: 8px; color: #9aa0a6; min-height: 15px; }
+    </style>
+  </head>
+  <body>
+    <h1>Query this PDF with Crisp</h1>
+    <p>Ingests the PDF open in this tab into your workspace, then opens chat scoped to it.</p>
+    <input id="origin" type="url" placeholder="Crispr app URL (e.g. http://localhost:3000)" />
+    <button id="go">Ingest &amp; ask</button>
+    <div id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
