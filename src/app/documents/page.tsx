@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   ArrowClockwise,
   CheckCircle,
@@ -42,7 +42,6 @@ export default function DocumentsPage() {
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const { activeIds, setActiveIds, hydrated } = useActiveDocuments();
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   const load = useCallback(() => api.listDocuments().then(setDocs).catch(() => setDocs([])), []);
 
@@ -50,9 +49,9 @@ export default function DocumentsPage() {
     void load();
   }, [load]);
 
-  // FR-49 support: browser extension hands off a PDF URL via ?fetch_url=
+  // FR-49 support: browser extension hands off a PDF URL via /documents?fetch_url=
   useEffect(() => {
-    const fetchUrl = searchParams.get("fetch_url");
+    const fetchUrl = new URLSearchParams(window.location.search).get("fetch_url");
     if (!fetchUrl) return;
     setFetchNotice(`Ingesting from URL… ${fetchUrl}`);
     api
