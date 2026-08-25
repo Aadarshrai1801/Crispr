@@ -34,7 +34,41 @@ export const config = {
   enableOcr: boolEnv("ENABLE_OCR", true),
 
   dataDir: path.resolve(process.cwd(), process.env.DATA_DIR ?? "./data"),
+
+  /* ---- v2 ---- */
+  // Default answer-confidence threshold; overridable per workspace (FR-42).
+  confidenceThreshold: numEnv("CONFIDENCE_THRESHOLD", 0.55),
+  // Similarity above which two passages in different documents are conflict candidates (FR-43).
+  conflictCandidateSimilarity: numEnv("CONFLICT_CANDIDATE_SIMILARITY", 0.86),
+  // Max chunks examined per workspace conflict scan (pairwise cost guard).
+  conflictScanMaxChunks: numEnv("CONFLICT_SCAN_MAX_CHUNKS", 1200),
+  // Cross-document "may also need correcting" suggestion similarity (FR-50).
+  crossDocSuggestionSimilarity: numEnv("CROSS_DOC_SUGGESTION_SIMILARITY", 0.72),
+  // Repeated flagged questions needed before a suggested correction is generated (FR-51).
+  repeatedFlagClusterSize: numEnv("REPEATED_FLAG_CLUSTER_SIZE", 3),
+  repeatedFlagClusterSimilarity: numEnv("REPEATED_FLAG_CLUSTER_SIMILARITY", 0.82),
+  webhookTimeoutMs: numEnv("WEBHOOK_TIMEOUT_MS", 5000),
+  // Secret used to encrypt integration credentials at rest (AES-256-GCM). Set in production!
+  encryptionSecret: process.env.CRISPR_ENCRYPTION_SECRET ?? "crispr-local-dev-encryption-secret",
+  // Slack/Teams bot wiring (optional; used by /api/integrations/slack/events).
+  slackSigningSecret: process.env.SLACK_SIGNING_SECRET ?? "",
+  slackDefaultWorkspaceId: process.env.SLACK_DEFAULT_WORKSPACE_ID ?? "",
 } as const;
+
+/** Per-workspace soft/hard caps from the PRD scalability table + packaging gates. */
+export const tierCaps = {
+  free: { documents: 3, members: 1 },
+  pro: { documents: Infinity, members: 1 },
+  team: { documents: 2000, members: 25 },
+  enterprise: { documents: 50000, members: 500 },
+} as const;
+
+/** Features gated to specific minimum tiers (PRD pricing table). */
+export const tierFeatures = {
+  apiKeys: ["enterprise"] as const,
+  confluenceSharepoint: ["enterprise"] as const,
+  publicApi: ["enterprise"] as const,
+};
 
 export const uploadsDir = () => path.join(config.dataDir, "uploads");
 export const lanceDbDir = () => path.join(config.dataDir, "lancedb");
