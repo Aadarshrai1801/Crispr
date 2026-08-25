@@ -72,3 +72,64 @@ export async function generateGroundedAnswer(req: GroundedAnswerRequest): Promis
 function isReasoningModel(model: string): boolean {
   return /gpt-oss|qwen|deepseek/i.test(model);
 }
+
+/* ------------------------------------------------------------------ */
+/* v2 helpers                                                          */
+/* ------------------------------------------------------------------ */
+
+/** FR-43: batch verdict on whether passage pairs make conflicting factual claims. */
+export async function generateConflictVerdicts(
+  pairs: Array<{ index: number; passageA: string; passageB: string }>
+): Promise<Array<{ index: number; conflicting: boolean; rationale?: string }>> {
+  const groq = getGroqClient();
+  const content = [
+    "You are a document consistency auditor. For each numbered pair of passages from DIFFERENT documents, decide whether they make CONFLICTING factual claims about the same subject (different values, dates, percentages, procedures, or rules for the same thing).",
+    "Superficial topic overlap without a factual contradiction is NOT a conflict. Different scopes/jurisdictions explicitly stated are NOT conflicts.",
+    "",
+    ...pairs.flatMap((p) => [`PAIR ${p.index}:`, p.passageA, "---", p.passageB, ""]),
+    'Respond ONLY with a JSON array like [{"index":1,"conflicting":true,"rationale":"one short sentence explaining the contradiction"}]. Include every pair index.',
+  ].join("\n");
+
+  const completion = (await groq.chat.completions.create({
+    model: config.groqModel,
+    temperature: 0,
+    ...(isReasoningModel(config.groqModel) ? { reasoning_effort: "low" } : {}),
+    max_completion_tokens: 2048,
+    messages: [{ role: "user", content }],
+  } as Parameters<Groq["chat"]["completions"]["create"]>[0])) as Groq.Chat.ChatCompletion;
+
+  const raw = completion.choices[0]?.message?.content ?? "[]";
+  const jsonText = raw.slice(raw.indexOf("["), raw.lastIndexOf("]") + 1);
+  const parsed = JSON.parse(jsonText) as Array<{ index: number; conflicting: boolean; rationale?: string }>;
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+/** FR-51: synthesize a draft correction for a repeatedly-flagged question from retrieved context. */
+export async function generateSuggestedAnswer(question: string, contexts: string[]): Promise<string> {
+  const groq = getGroqClient();
+  const content = [
+    "Context passages:",
+    ...contexts.map((c, i) => `[${i + 1}] ${c}`),
+    "",
+    `Question (flagged as answered incorrectly multiple times): ${question}`,
+    "",
+    "Draft the best-supported answer using ONLY the passages above. Cite with [n]. If the passages genuinely do not answer it, reply exactly: INSUFFICIENT_CONTEXT.",
+  ].join("\n");
+
+  const completion = (await groq.chat.completions.create({
+    model: config.groqModel,
+    temperature: 0.1,
+    ...(isReasoningModel(config.groqModel) ? { reasoning_effort: "low" } : {}),
+    max_completion_tokens: 1024,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You draft candidate corrections for a self-correcting Q&A system. Be precise, concise, and strictly grounded in the provided passages.",
+      },
+      { role: "user", content },
+    ],
+  } as Parameters<Groq["chat"]["completions"]["create"]>[0])) as Groq.Chat.ChatCompletion;
+
+  return normalizeCitationMarkers(completion.choices[0]?.message?.content?.trim() ?? "");
+}

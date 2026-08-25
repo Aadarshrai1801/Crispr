@@ -145,6 +145,7 @@ export type AuditActionType =
   | "correction.edited"
   | "correction.deleted"
   | "correction.retired"
+  | "correction.superseded"
   | "comment.added"
   | "member.added"
   | "member.role_changed"
@@ -246,7 +247,6 @@ export interface RetrievedChunk {
   section_label: string | null;
   text: string;
   score: number;
-  has_table?: boolean;
 }
 
 export interface QueryResultPayload {

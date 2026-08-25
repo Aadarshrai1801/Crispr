@@ -27,19 +27,15 @@ export function confidenceFromDocumentAnswer(input: {
   if (!chunkScores.length) return 0.15;
 
   const top = [...chunkScores].sort((a, b) => b - a);
+  const k = Math.min(3, top.length);
+  const meanTop3 = top.slice(0, k).reduce((s, v) => s + calibrateRelevance(v), 0) / k;
   const best = calibrateRelevance(top[0]);
-  const meanTop3 = top.slice(0, Math.min(3, top.length)).reduce((s, v) => s + calibrateRelevance(v), 0) / Math.min(3, top.length);
-
-  const agreement = clamp01(citedCount / Math.min(chunkScores.length, config_free()));
+  const agreement = clamp01(citedCount / Math.min(chunkScores.length, 6));
   const groundedness01 = clamp01(input.groundedness / 100);
 
-  const score = 0.4 * meanTop3 + 0.25 * best * 0.2 + 0.15 * agreement + 0.35 * groundedness01 + 0.05 * best;
+  // Weights sum to 1: relevance dominates, grounding and agreement are strong signals.
+  const score = 0.4 * meanTop3 + 0.2 * best + 0.1 * agreement + 0.3 * groundedness01;
   return Math.round(clamp01(score) * 100) / 100;
-}
-
-function config_free(): number {
-  // Retrieval candidates considered for the agreement term (matches default top-k).
-  return 6;
 }
 
 export function confidenceForCorrection(): number {

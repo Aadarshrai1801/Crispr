@@ -1,4 +1,4 @@
-import * as lancedb from "@lancedb/lancedb";
+﻿import * as lancedb from "@lancedb/lancedb";
 import { mkdirSync } from "node:fs";
 import { lanceDbDir } from "./config";
 
@@ -74,7 +74,12 @@ export async function deleteVectorsForDocument(documentId: string) {
   await table.delete(`document_id = '${documentId}'`);
 }
 
-export async function searchChunks(vector: number[], documentIds: string[], topK: number): Promise<ChunkVectorRow[]> {
+function simFromDistance(r: Record<string, unknown>): number {
+  const d = Number(r._distance);
+  return Number.isFinite(d) ? 1 - d : 0;
+}
+
+export async function searchChunks(vector: number[], documentIds: string[], topK: number): Promise<RetrievedChunkRow[]> {
   const db = await getVectorDb();
   const names = await db.tableNames();
   if (!names.includes("chunks") || !documentIds.length) return [];
@@ -84,6 +89,43 @@ export async function searchChunks(vector: number[], documentIds: string[], topK
     .where(filter)
     .limit(Math.min(topK * 3, 200))
     .toArray()) as unknown as Array<Record<string, unknown>>;
+  return rows
+    .map((r) => ({
+      id: String(r.id),
+      document_id: String(r.document_id),
+      workspace_id: String(r.workspace_id),
+      page_number: Number(r.page_number),
+      section_label: (r.section_label as string) || "",
+      text: String(r.text),
+      score: simFromDistance(r),
+    }))
+    .sort((a, b) => b.score - a.score);
+}
+
+export interface RetrievedChunkRow {
+  id: string;
+  document_id: string;
+  workspace_id: string;
+  page_number: number;
+  section_label: string;
+  text: string;
+  score: number;
+}
+
+/**
+ * Non-vector scan of a workspace's chunks — used by conflict detection and
+ * compounding suggestions. Capped to keep local scans fast.
+ */
+export async function listWorkspaceChunks(workspaceId: string, limit = 2000): Promise<Array<ChunkVectorRow & { vector: number[] }>> {
+  const db = await getVectorDb();
+  const names = await db.tableNames();
+  if (!names.includes("chunks")) return [];
+  const table = await db.openTable("chunks");
+  const rows = (await table
+    .query()
+    .where(`workspace_id = '${workspaceId}'`)
+    .limit(limit)
+    .toArray()) as unknown as Array<Record<string, unknown>>;
   return rows.map((r) => ({
     id: String(r.id),
     document_id: String(r.document_id),
@@ -91,7 +133,40 @@ export async function searchChunks(vector: number[], documentIds: string[], topK
     page_number: Number(r.page_number),
     section_label: (r.section_label as string) || "",
     text: String(r.text),
+    vector: (r.vector as number[]) ?? [],
   }));
+}
+
+/** Cross-document similar-passage search used by FR-50 suggestion generation. */
+export async function searchChunksWorkspace(
+  vector: number[],
+  workspaceId: string,
+  excludeDocumentIds: string[],
+  limit = 8
+): Promise<RetrievedChunkRow[]> {
+  const db = await getVectorDb();
+  const names = await db.tableNames();
+  if (!names.includes("chunks")) return [];
+  const table = await db.openTable("chunks");
+  const exclusions = excludeDocumentIds.length
+    ? ` AND document_id NOT IN (${excludeDocumentIds.map((d) => `'${d}'`).join(",")})`
+    : "";
+  const rows = (await cosineSearch(table, vector)
+    .where(`workspace_id = '${workspaceId}'${exclusions}`)
+    .limit(Math.max(limit * 4, 40))
+    .toArray()) as unknown as Array<Record<string, unknown>>;
+  return rows
+    .map((r) => ({
+      id: String(r.id),
+      document_id: String(r.document_id),
+      workspace_id: String(r.workspace_id),
+      page_number: Number(r.page_number),
+      section_label: (r.section_label as string) || "",
+      text: String(r.text),
+      score: simFromDistance(r),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }
 
 export interface CorrectionIndexHit {
@@ -127,6 +202,7 @@ export async function searchCorrections(vector: number[], workspaceId: string, d
   const names = await db.tableNames();
   if (!names.includes("corrections_index")) return [];
   const table = await db.openTable("corrections_index");
+  // scope='workspace' corrections match regardless of which docs are in play.
   const filter = `workspace_id = '${workspaceId}' AND (scope = 'workspace' OR document_id IN (${documentIds
     .map((d) => `'${d}'`)
     .join(",")}))`;
@@ -135,7 +211,7 @@ export async function searchCorrections(vector: number[], workspaceId: string, d
     .limit(20)
     .toArray()) as unknown as Array<Record<string, unknown>>;
   return rows
-    .map((r) => ({ id: String(r.id), similarity: 1 - Number(r._distance) }))
+    .map((r) => ({ id: String(r.id), similarity: simFromDistance(r) }))
     .filter((h) => h.similarity >= threshold)
     .sort((a, b) => b.similarity - a.similarity);
 }

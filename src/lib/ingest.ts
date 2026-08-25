@@ -1,7 +1,7 @@
 import { readFile, unlink } from "node:fs/promises";
 import { config } from "./config";
 import { chunkPages } from "./chunker";
-import { extractPdfPages } from "./pdf-extract";
+import { extractAnyDocument } from "./formats";
 import { ocrPdfPage } from "./ocr";
 import { embed } from "./embeddings";
 import { upsertChunkVectors } from "./vector";
@@ -13,6 +13,8 @@ let pumping = false;
 declare global {
   // eslint-disable-next-line no-var
   var __crispIngestBusy: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __crispConflictScanTimers: Map<string, ReturnType<typeof setTimeout>> | undefined;
 }
 
 export function enqueueIngestion(documentId: string) {
@@ -28,6 +30,7 @@ async function pump() {
       const id = queue.shift()!;
       try {
         await ingest(id);
+        scheduleConflictScan(getDocument(id)?.workspace_id);
       } catch (err) {
         console.error(`[ingest] ${id} failed:`, err);
         updateDocumentStatus(id, {
@@ -41,6 +44,33 @@ async function pump() {
   }
 }
 
+/**
+ * FR-43: proactive conflict detection runs after new content lands in a
+ * workspace — debounced so batch uploads trigger one scan, not N.
+ */
+export function scheduleConflictScan(workspaceId?: string, delayMs = 30_000) {
+  if (!workspaceId) return;
+  globalThis.__crispConflictScanTimers ??= new Map();
+  const timers = globalThis.__crispConflictScanTimers;
+  const existing = timers.get(workspaceId);
+  if (existing) clearTimeout(existing);
+  timers.set(
+    workspaceId,
+    setTimeout(() => {
+      timers.delete(workspaceId);
+      void (async () => {
+        try {
+          const { scanWorkspaceConflicts } = await import("./conflicts");
+          const created = await scanWorkspaceConflicts(workspaceId);
+          if (created > 0) console.log(`[conflicts] ${workspaceId}: ${created} new alert(s)`);
+        } catch (err) {
+          console.warn("[conflicts] scan failed:", err instanceof Error ? err.message : err);
+        }
+      })();
+    }, delayMs)
+  );
+}
+
 export async function ingest(documentId: string): Promise<void> {
   const doc = getDocument(documentId);
   if (!doc) throw new Error("Document not found");
@@ -48,12 +78,12 @@ export async function ingest(documentId: string): Promise<void> {
 
   const buffer = await readFile(doc.storage_path);
 
-  let { pages, pageCount } = await extractPdfPages(buffer);
+  let { pages, pageCount, format } = await extractAnyDocument(buffer, doc.filename);
   pageCount = pageCount || pages.length;
 
-  // OCR fallback for image-only / low-text pages
+  // OCR fallback for image-only / low-text PDF pages
   let ocrUsed = false;
-  if (config.enableOcr) {
+  if (config.enableOcr && format === "pdf") {
     for (const page of pages) {
       if (page.text.trim().length >= config.ocrMinChars) continue;
       const result = await ocrPdfPage(buffer, page.pageNumber, config.ocrMinChars);
@@ -68,9 +98,9 @@ export async function ingest(documentId: string): Promise<void> {
   const chunks = chunkPages(pages, documentId);
   if (!chunks.length) {
     throw new Error(
-      lowConfidence > 0
-        ? "No extractable text found — the PDF appears to be scanned or handwritten and OCR could not recover it."
-        : "The PDF contains no extractable text content."
+      lowConfidence > 0 && format === "pdf"
+        ? "No extractable text found — the file appears to be scanned or handwritten and OCR could not recover it."
+        : "The file contains no extractable text content."
     );
   }
 
@@ -92,7 +122,7 @@ export async function ingest(documentId: string): Promise<void> {
     page_count: pageCount,
     ocr_warning: ocrUsed || lowConfidence > 0,
     error:
-      lowConfidence > 0
+      lowConfidence > 0 && format === "pdf"
         ? `${lowConfidence} page(s) had little/no machine-readable text${ocrUsed ? "; OCR was applied where possible" : " and OCR was unavailable"} — answers from those pages may be incomplete.`
         : null,
   });

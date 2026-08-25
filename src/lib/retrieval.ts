@@ -3,18 +3,23 @@ import { config } from "./config";
 import { embedOne } from "./embeddings";
 import { generateGroundedAnswer, LlmNotConfiguredError } from "./llm";
 import {
-  defaultUserId,
   findCachedAnswer,
   getCorrection,
   getDocument,
+  getWorkspace,
   incrementCorrectionStats,
   insertQueryLog,
+  listDocuments,
 } from "./db";
+import { buildConfidence, confidenceForCorrection, confidenceForNoAnswer, confidenceFromDocumentAnswer } from "./confidence";
 import { computeGroundedness, normalizeQuestion } from "./utils";
 import { searchChunks, searchCorrections } from "./vector";
 import type { Citation, QueryLogRow, QueryResultPayload, SourceType } from "./types";
 
 const NO_ANSWER_PHRASE = "cannot be answered from";
+
+/** PRD non-functional requirement: degrade gracefully beyond 50 docs instead of timing out. */
+const MULTI_DOC_SOFT_LIMIT = 50;
 
 interface AnswerOptions {
   workspaceId: string;
@@ -25,16 +30,40 @@ interface AnswerOptions {
   parentLog?: QueryLogRow;
 }
 
+/** FR-37 helper: all ready documents in a workspace (workspace-wide multi-doc queries). */
+export function readyDocumentIds(workspaceId: string): string[] {
+  return listDocuments(workspaceId)
+    .filter((d) => d.status === "ready")
+    .map((d) => d.id);
+}
+
+export interface ResolvedScope {
+  documentIds: string[];
+  narrowed: boolean;
+}
+
+/** Applies the >50-document narrowing rule; prefers user-selected docs, then most recent. */
+export function resolveQueryScope(requestedIds: string[], workspaceId: string): ResolvedScope {
+  if (requestedIds.length <= MULTI_DOC_SOFT_LIMIT) return { documentIds: requestedIds, narrowed: false };
+  const readySet = new Set(readyDocumentIds(workspaceId));
+  const kept = requestedIds.filter((id) => readySet.has(id)).slice(0, MULTI_DOC_SOFT_LIMIT);
+  return { documentIds: kept, narrowed: true };
+}
+
 export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPayload> {
   const { workspaceId, userId, documentIds, question } = opts;
   const isRetry = Boolean(opts.parentLog);
   const attempt = opts.parentLog ? opts.parentLog.attempt + 1 : 0;
+  const threshold = getWorkspace(workspaceId)?.confidence_threshold ?? config.confidenceThreshold;
 
   // ---- Cache identical fresh queries (cost control), never retries ----
   if (!isRetry) {
     const cached = findCachedAnswer(workspaceId, normalizeQuestion(question), documentIds);
     if (cached && Date.now() - new Date(cached.created_at).getTime() < 24 * 3600 * 1000) {
-      return payloadFromLog(cached);
+      const payload = payloadFromLog(cached);
+      payload.confidence.threshold = threshold;
+      payload.confidence.flagged_needs_review = payload.confidence.score < threshold;
+      return payload;
     }
   }
 
@@ -62,6 +91,9 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
         retry_of: null,
         attempt: 0,
         strategy_note: `correction-match@${top.similarity.toFixed(3)}`,
+        confidence_score: confidenceForCorrection(),
+        confidence_threshold: threshold,
+        flagged_needs_review: false,
       });
       // Confirmation loop: treat early serves against a new phrasing as a soft match
       // (PRD closing guidance) rather than a silent guess.
@@ -73,6 +105,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
         source_type: "correction",
         citations: [],
         groundedness: 100,
+        confidence: buildConfidence(confidenceForCorrection(), threshold),
         correction: {
           id: correction.id,
           corrected_answer_text: correction.corrected_answer_text,
@@ -114,6 +147,9 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
       retry_of: opts.parentLog?.id ?? null,
       attempt,
       strategy_note: isRetry ? `retry-widened-topk=${topK}` : "fresh",
+      confidence_score: confidenceForNoAnswer(),
+      confidence_threshold: threshold,
+      flagged_needs_review: true,
     });
     return {
       query_log_id: queryLogId,
@@ -122,6 +158,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
       source_type: "no_answer",
       citations: [],
       groundedness: 0,
+      confidence: buildConfidence(confidenceForNoAnswer(), threshold),
       correction: null,
       attempt,
       strategy_note: "No matching chunks retrieved",
@@ -174,6 +211,16 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
   const sourceType: SourceType = isNoAnswer ? "no_answer" : "document";
   const groundedness = isNoAnswer ? 0 : computeGroundedness(answerText, [...usedIndices].map((i) => i + 1));
 
+  // FR-42: confidence from retrieval relevance + source agreement (+ grounding).
+  const confidenceScore = isNoAnswer
+    ? confidenceForNoAnswer()
+    : confidenceFromDocumentAnswer({
+        chunkScores: chunks.map((c) => c.score),
+        citedCount: usedIndices.size,
+        groundedness,
+      });
+  const confidence = buildConfidence(confidenceScore, threshold);
+
   insertQueryLog({
     id: queryLogId,
     workspace_id: workspaceId,
@@ -187,6 +234,9 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
     retry_of: opts.parentLog?.id ?? null,
     attempt,
     strategy_note: isRetry ? `retry-topk=${topK}+strict-grounding` : `vector-topk=${topK}`,
+    confidence_score: confidence.score,
+    confidence_threshold: threshold,
+    flagged_needs_review: confidence.flagged_needs_review,
   });
 
   return {
@@ -196,6 +246,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
     source_type: sourceType,
     citations,
     groundedness,
+    confidence,
     correction: null,
     attempt,
     strategy_note: isRetry ? `Retry with wider retrieval (top-k=${topK}) + stricter grounding` : "Fresh retrieval",
@@ -220,6 +271,8 @@ function payloadFromLog(log: QueryLogRow): QueryResultPayload {
       };
     }
   }
+  const threshold = log.confidence_threshold ?? config.confidenceThreshold;
+  const score = log.confidence_score ?? (log.source_type === "correction" ? 0.99 : 0.5);
   return {
     query_log_id: log.id,
     question: log.question_text,
@@ -227,6 +280,7 @@ function payloadFromLog(log: QueryLogRow): QueryResultPayload {
     source_type: log.source_type,
     citations: JSON.parse(log.citations) as Citation[],
     groundedness: log.source_type === "correction" ? 100 : -1,
+    confidence: buildConfidence(score, threshold),
     correction: correctionMeta,
     attempt: log.attempt,
     strategy_note: "Cached identical query",
@@ -239,6 +293,7 @@ export async function originalDocumentAnswer(workspaceId: string, documentIds: s
   const chunks = await searchChunks(vector, documentIds, config.retrievalTopK);
   const documents = documentIds.map((id) => getDocument(id)).filter((d): d is NonNullable<typeof d> => Boolean(d));
   const namesById = new Map(documents.map((d) => [d.id, d.filename]));
+  void workspaceId;
 
   if (!chunks.length) {
     return {
@@ -248,6 +303,7 @@ export async function originalDocumentAnswer(workspaceId: string, documentIds: s
       source_type: "no_answer",
       citations: [],
       groundedness: 0,
+      confidence: buildConfidence(confidenceForNoAnswer(), config.confidenceThreshold),
       correction: null,
       attempt: 0,
       strategy_note: "Original document answer (on-demand)",
@@ -285,7 +341,6 @@ export async function originalDocumentAnswer(workspaceId: string, documentIds: s
       chunk_id: c.id,
     });
   }
-  void workspaceId;
   return {
     query_log_id: "",
     question,
@@ -293,6 +348,14 @@ export async function originalDocumentAnswer(workspaceId: string, documentIds: s
     source_type: "document",
     citations,
     groundedness: computeGroundedness(answerText, [...usedIndices].map((i) => i + 1)),
+    confidence: buildConfidence(
+      confidenceFromDocumentAnswer({
+        chunkScores: chunks.map((c) => c.score),
+        citedCount: usedIndices.size,
+        groundedness: computeGroundedness(answerText, [...usedIndices].map((i) => i + 1)),
+      }),
+      config.confidenceThreshold
+    ),
     correction: null,
     attempt: 0,
     strategy_note: "Original document answer (on-demand)",
