@@ -300,6 +300,23 @@ function seed(db: Database.Database) {
     wsId,
     ownerId
   );
+
+  // Seed demo teammates in the default workspace with distinct roles so the RBAC
+  // matrix (FR-34) is observable via the user switcher. The owner is always Admin.
+  const demoRoles: Array<[string, WorkspaceRole]> = [
+    ["user_marcus", "Approver"],
+    ["user_priya", "Contributor"],
+    ["user_dana", "Viewer"],
+  ];
+  for (const [uid, role] of demoRoles) {
+    if (uid !== ownerId) {
+      db.prepare("INSERT OR IGNORE INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)").run(
+        wsId,
+        uid,
+        role
+      );
+    }
+  }
 }
 
 export function getDb(): Database.Database {

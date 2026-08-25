@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defaultWorkspaceId, insertWorkspace, listWorkspacesForUser } from "@/lib/db";
+import { insertWorkspace, listWorkspacesForUser } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { resolveUserId } from "@/lib/rbac";
 import { apiError, json } from "@/lib/api-helpers";
@@ -41,11 +41,6 @@ export async function GET(request: Request) {
   try {
     const userId = resolveUserId(request);
     const workspaces = listWorkspacesForUser(userId);
-    // Guarantee the legacy default workspace is always present.
-    if (!workspaces.some((w) => w.id === defaultWorkspaceId())) {
-      const fallback = listWorkspacesForUser(userId);
-      void fallback;
-    }
     return json({ workspaces });
   } catch (err) {
     return apiError(err);
