@@ -1,0 +1,393 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  ArrowClockwise,
+  CaretDown,
+  ClockCounterClockwise,
+  PencilSimple,
+  SealCheck,
+  Trash,
+  XCircle,
+} from "@phosphor-icons/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { api, type CorrectionDto, type DocumentDto } from "@/lib/client/api";
+import { Button } from "@/components/ui/button";
+import { Chip, EmptyState, Skeleton } from "@/components/ui/primitives";
+import { cn, formatDate } from "@/lib/utils";
+
+interface CorrectionWithHistory extends CorrectionDto {
+  history?: CorrectionDto[];
+}
+
+export default function CorrectionsPage() {
+  const [corrections, setCorrections] = useState<CorrectionDto[] | null>(null);
+  const [docs, setDocs] = useState<DocumentDto[]>([]);
+  const [docFilter, setDocFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "retired" | "superseded">("all");
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [histories, setHistories] = useState<Record<string, CorrectionWithHistory[]>>({});
+  const [editing, setEditing] = useState<CorrectionDto | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const reduce = useReducedMotion();
+
+  async function load() {
+    const [cs, ds] = await Promise.all([api.corrections(), api.listDocuments()]);
+    setCorrections(cs);
+    setDocs(ds);
+  }
+
+  useEffect(() => {
+    void load().catch(() => setCorrections([]));
+  }, []);
+
+  const nameById = useMemo(
+    () => Object.fromEntries(docs.map((d) => [d.id, d.filename.replace(/\.pdf$/i, "")])),
+    [docs]
+  );
+
+  const filtered = useMemo(() => {
+    if (!corrections) return null;
+    return corrections.filter((c) => {
+      if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (docFilter === "workspace") {
+        if (c.scope !== "workspace") return false;
+      } else if (docFilter !== "all" && c.document_id !== docFilter) {
+        if (!(docFilter === "all")) return false;
+      }
+      if (query.trim()) {
+        const q = query.toLowerCase();
+        const haystack = `${c.question_text} ${c.corrected_answer_text} ${c.wrong_answer_text} ${c.note ?? ""} ${(c.topic_tags ?? []).join(" ")}`;
+        if (!haystack.toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+  }, [corrections, docFilter, statusFilter, query]);
+
+  async function openHistory(c: CorrectionDto) {
+    const key = expanded === c.id ? null : c.id;
+    setExpanded(key);
+    if (key) {
+      try {
+        const res = await fetch(`/api/corrections/${c.id}`);
+        const data = (await res.json()) as CorrectionWithHistory;
+        setHistories((h) => ({ ...h, [c.id]: data.history ?? [c] }));
+      } catch {
+        setHistories((h) => ({ ...h, [c.id]: [c] }));
+      }
+    }
+  }
+
+  async function retire(c: CorrectionDto) {
+    if (!confirm("Retire this correction? Future queries will fall back to document-derived answers.")) return;
+    setBusyId(c.id);
+    try {
+      await api.editCorrection(c.id, { action: "retire" });
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function saveEdit(fields: { question_text: string; corrected_answer_text: string; note: string | null; topic_tags: string[] }) {
+    if (!editing) return;
+    setBusyId(editing.id);
+    try {
+      await api.editCorrection(editing.id, { action: "edit", ...fields });
+      setEditing(null);
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-[1400px] px-4 py-8 md:px-8 md:py-10">
+      <header className="mb-6">
+        <h1 className="text-2xl font-semibold tracking-tight">Corrections</h1>
+        <p className="mt-1 text-[13px] text-ink-soft">
+          Every human fix persisted here overrides retrieval on matching future questions — and never touches the
+          source PDF.
+        </p>
+      </header>
+
+      {/* Filters */}
+      <div className="mb-5 flex flex-wrap items-center gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search questions, answers, notes…"
+          aria-label="Search corrections"
+          className="focus-ring h-9 w-full max-w-xs rounded-xl border border-line-strong bg-surface px-3 text-[13px] placeholder:text-ink-faint"
+        />
+        <select
+          value={docFilter}
+          onChange={(e) => setDocFilter(e.target.value)}
+          aria-label="Filter by document"
+          className="focus-ring h-9 rounded-xl border border-line-strong bg-surface px-2 text-xs"
+        >
+          <option value="all">All documents</option>
+          <option value="workspace">Workspace-wide only</option>
+          {docs.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.filename}
+            </option>
+          ))}
+        </select>
+        <div className="flex gap-1">
+          {(["all", "active", "superseded", "retired"] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => setStatusFilter(s)}
+              aria-pressed={statusFilter === s}
+              className={cn(
+                "focus-ring rounded-lg px-2.5 py-1.5 text-xs capitalize transition-colors duration-150",
+                statusFilter === s ? "bg-accent-soft font-medium text-accent-strong" : "text-ink-soft hover:bg-surface-hover"
+              )}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* List */}
+      {filtered === null ? (
+        <div className="space-y-3">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-24" />
+          ))}
+        </div>
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={<SealCheck size={20} weight="light" />}
+          title="No corrections yet"
+          body="When an answer is wrong, flag it in chat and provide the correct answer — it will appear and persist here."
+        />
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((c) => {
+            const isOpen = expanded === c.id;
+            const history = histories[c.id];
+            return (
+              <motion.div
+                layout={!reduce}
+                key={c.id}
+                className={cn(
+                  "rounded-2xl border bg-surface transition-colors duration-200",
+                  c.status === "active" ? "border-line" : "border-line opacity-70"
+                )}
+              >
+                <div className="p-4">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <Chip tone={c.status === "active" ? "accent" : "neutral"}>{c.status}</Chip>
+                    <Chip>{c.scope === "workspace" ? "workspace-wide" : nameById[c.document_id ?? ""] ?? "document"}</Chip>
+                    {(c.topic_tags ?? []).map((t) => (
+                      <Chip key={t}>{t}</Chip>
+                    ))}
+                    <span className="ml-auto font-mono text-[10px] text-ink-faint tabular-nums">
+                      served {c.served_count} · confirmed {c.confirmed_count}
+                    </span>
+                  </div>
+
+                  <p className="mt-2.5 text-[13px] font-medium leading-snug">{c.question_text}</p>
+
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    <div className="rounded-xl border border-danger/20 bg-danger-soft/50 p-2.5">
+                      <p className="font-mono text-[9px] uppercase tracking-wider text-danger">was</p>
+                      <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-ink-soft">{c.wrong_answer_text}</p>
+                    </div>
+                    <div className="rounded-xl border border-accent-line bg-accent-soft p-2.5">
+                      <p className="font-mono text-[9px] uppercase tracking-wider text-accent-strong">now</p>
+                      <p className="mt-1 text-xs leading-relaxed text-ink">{c.corrected_answer_text}</p>
+                    </div>
+                  </div>
+
+                  {c.note && <p className="mt-2 text-xs italic leading-relaxed text-ink-faint">Note: {c.note}</p>}
+
+                  <footer className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-line pt-2.5">
+                    <span className="text-[11px] text-ink-faint">
+                      corrected {formatDate(c.created_at)} · by {c.submitted_by.startsWith("user_") ? "you" : c.submitted_by}
+                    </span>
+                    <span className="ml-auto flex items-center gap-1">
+                      {c.status === "active" && (
+                        <>
+                          <Button variant="ghost" size="sm" onClick={() => setEditing(c)}>
+                            <PencilSimple size={12} weight="light" /> Edit
+                          </Button>
+                          <Button variant="ghost" size="sm" disabled={busyId === c.id} onClick={() => void retire(c)}>
+                            <Trash size={12} weight="light" /> Retire
+                          </Button>
+                        </>
+                      )}
+                      <Button variant="ghost" size="sm" onClick={() => void openHistory(c)}>
+                        <ClockCounterClockwise size={12} weight="light" />
+                        History
+                        <CaretDown size={10} className={cn("transition-transform duration-200", isOpen && "rotate-180")} />
+                      </Button>
+                    </span>
+                  </footer>
+
+                  <AnimatePresence initial={false}>
+                    {isOpen && history && (
+                      <motion.div
+                        initial={reduce ? false : { opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                        className="overflow-hidden"
+                      >
+                        <ol className="mt-3 space-y-2 border-l-2 border-line pl-4">
+                          {history.map((h, i) => (
+                            <li key={h.id} className="relative text-xs leading-relaxed">
+                              <span
+                                className={cn(
+                                  "absolute -left-[21px] top-1 h-2 w-2 rounded-full",
+                                  i === 0 ? "bg-accent" : "bg-line-strong"
+                                )}
+                              />
+                              {i === 0 ? (
+                                <span className="text-ink-soft">
+                                  Current version · saved {formatDate(h.created_at)}
+                                  {h.status !== "active" && ` · ${h.status}`}
+                                </span>
+                              ) : (
+                                <span className="text-ink-faint">
+                                  Superseded version · {formatDate(h.created_at)} — “{h.corrected_answer_text.slice(0, 120)}
+                                  {h.corrected_answer_text.length > 120 ? "…" : ""}”
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                          {history.length === 1 && (
+                            <li className="text-ink-faint">No prior versions — this is the original correction.</li>
+                          )}
+                        </ol>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Edit modal */}
+      {editing && (
+        <EditModal
+          correction={editing}
+          busy={busyId === editing.id}
+          onSave={(fields) => void saveEdit(fields)}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditModal({
+  correction,
+  busy,
+  onSave,
+  onClose,
+}: {
+  correction: CorrectionDto;
+  busy: boolean;
+  onSave: (fields: { question_text: string; corrected_answer_text: string; note: string | null; topic_tags: string[] }) => void;
+  onClose: () => void;
+}) {
+  const [question, setQuestion] = useState(correction.question_text);
+  const [answer, setAnswer] = useState(correction.corrected_answer_text);
+  const [note, setNote] = useState(correction.note ?? "");
+  const [tags, setTags] = useState((correction.topic_tags ?? []).join(", "));
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4 backdrop-blur-sm"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="w-full max-w-lg rounded-2xl border border-line bg-surface p-5 shadow-[var(--shadow-card)]">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Edit correction</h2>
+          <Button variant="ghost" size="sm" aria-label="Close" onClick={onClose}>
+            <XCircle size={13} />
+          </Button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label htmlFor="edit-q" className="mb-1 block text-xs font-medium">
+              Question
+            </label>
+            <textarea
+              id="edit-q"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              rows={2}
+              className="focus-ring w-full resize-none rounded-xl border border-line-strong bg-bg px-3 py-2 text-[13px]"
+            />
+          </div>
+          <div>
+            <label htmlFor="edit-a" className="mb-1 block text-xs font-medium">
+              Corrected answer
+            </label>
+            <textarea
+              id="edit-a"
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              rows={4}
+              className="focus-ring w-full resize-none rounded-xl border border-line-strong bg-bg px-3 py-2 text-[13px]"
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label htmlFor="edit-n" className="mb-1 block text-xs font-medium">
+                Note / source
+              </label>
+              <input
+                id="edit-n"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                className="focus-ring h-9 w-full rounded-xl border border-line-strong bg-bg px-3 text-[13px]"
+              />
+            </div>
+            <div>
+              <label htmlFor="edit-t" className="mb-1 block text-xs font-medium">
+                Topic keywords
+              </label>
+              <input
+                id="edit-t"
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                className="focus-ring h-9 w-full rounded-xl border border-line-strong bg-bg px-3 text-[13px]"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              disabled={busy || answer.trim().length < 2 || question.trim().length < 3}
+              onClick={() =>
+                onSave({
+                  question_text: question.trim(),
+                  corrected_answer_text: answer.trim(),
+                  note: note.trim() || null,
+                  topic_tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
+                })
+              }
+            >
+              <ArrowClockwise size={13} weight="bold" /> {busy ? "Re-indexing…" : "Save & re-index"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

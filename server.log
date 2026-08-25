@@ -1,0 +1,25 @@
+
+> crispai@0.1.0 dev
+> next dev --turbopack
+
+   ▲ Next.js 15.5.23 (Turbopack)
+   - Local:        http://localhost:3000
+   - Network:      http://192.168.1.150:3000
+   - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 1163ms
+ ○ Compiling /api/documents ...
+ ✓ Compiled /api/documents in 1428ms
+ GET /api/documents 200 in 2391ms
+ ○ Compiling / ...
+ ✓ Compiled / in 4s
+ GET / 200 in 4441ms
+ ✓ Compiled /documents in 409ms
+ GET /documents 200 in 618ms
+ ○ Compiling /corrections ...
+ ✓ Compiled /corrections in 667ms
+ GET /corrections 200 in 909ms
+ GET / 200 in 251ms
+ GET / 200 in 215ms
+ GET /api/documents 200 in 370ms

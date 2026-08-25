@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+next-env.d.ts
+
+# runtime data (sqlite, lancedb, uploaded pdfs)
+data/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# generated pdf.js worker
+public/pdf.worker.min.mjs
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+.vercel
+*.tsbuildinfo
