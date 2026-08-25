@@ -4,8 +4,20 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { uploadsDir } from "@/lib/config";
-import { defaultUserId, defaultWorkspaceId, findDocumentByHash, insertDocument, listDocuments, getDb } from "@/lib/db";
+import {
+  countDocuments,
+  defaultWorkspaceId,
+  findDocumentByHash,
+  getDb,
+  getDocument,
+  insertDocument,
+  listDocuments,
+} from "@/lib/db";
 import { enqueueIngestion } from "@/lib/ingest";
+import { audit } from "@/lib/audit";
+import { AuthzError, requireContext, resolveUserId } from "@/lib/rbac";
+import { isSupportedUpload } from "@/lib/formats";
+import { tierCaps } from "@/lib/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,9 +34,22 @@ function sweepStale() {
     .run();
 }
 
-export async function GET() {
+function workspaceFromRequest(request: Request): string {
+  const url = new URL(request.url);
+  return url.searchParams.get("workspace_id") ?? request.headers.get("x-crisp-workspace-id") ?? defaultWorkspaceId();
+}
+
+export async function GET(request: Request) {
   sweepStale();
-  const docs = listDocuments(defaultWorkspaceId());
+  const wsId = workspaceFromRequest(request);
+  try {
+    // Viewers can list documents (FR-34); non-members cannot see anything.
+    await requireContext(request, wsId);
+  } catch (err) {
+    if (err instanceof AuthzError && err.status === 403) return NextResponse.json({ error: err.message }, { status: 403 });
+    throw err;
+  }
+  const docs = listDocuments(wsId);
   // Never expose absolute server paths
   return NextResponse.json(docs.map(({ storage_path: _sp, ...rest }) => rest));
 }
@@ -37,10 +62,26 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing file field" }, { status: 400 });
     }
     const force = String(form.get("force") ?? "") === "true";
+    const wsId = String(form.get("workspace_id") ?? workspaceFromRequest(request));
 
-    if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+    const ctx = await import("@/lib/rbac").then((m) => m.requireContext(request, wsId));
+    await import("@/lib/rbac").then((m) => m.requireContributor(ctx)); // FR-34: Viewer cannot upload
+
+    // PRD packaging: Free tier caps documents at 1-3.
+    const cap = tierCaps[ctx.workspace.plan_tier].documents;
+    if (Number.isFinite(cap) && countDocuments(wsId) >= cap && !force) {
       return NextResponse.json(
-        { error: "Unsupported format. Upload a PDF file.", remediation: "Export your file as PDF and try again." },
+        { error: `Document cap reached for ${ctx.workspace.plan_tier} plan (${cap}). Upgrade to continue.`, code: "tier_cap" },
+        { status: 402 }
+      );
+    }
+
+    if (!isSupportedUpload(file.name)) {
+      return NextResponse.json(
+        {
+          error: "Unsupported format. Upload a PDF, DOCX, XLSX, EML or MSG file.",
+          remediation: "Export your file to one of the supported formats and try again.",
+        },
         { status: 415 }
       );
     }
@@ -50,17 +91,19 @@ export async function POST(request: Request) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
 
-    // Password-protected / corrupt files fail fast at extraction; but detect encryption hint cheaply:
-    const header = buffer.subarray(0, 1024).toString("latin1");
-    if (!header.startsWith("%PDF")) {
-      return NextResponse.json(
-        { error: "This does not look like a valid PDF file.", remediation: "Verify the file opens in a PDF reader." },
-        { status: 422 }
-      );
+    // Password-protected / corrupt PDFs fail fast at extraction; detect encryption hint cheaply:
+    if (file.name.toLowerCase().endsWith(".pdf")) {
+      const header = buffer.subarray(0, 1024).toString("latin1");
+      if (!header.startsWith("%PDF")) {
+        return NextResponse.json(
+          { error: "This does not look like a valid PDF file.", remediation: "Verify the file opens in a PDF reader." },
+          { status: 422 }
+        );
+      }
     }
 
     const hash = createHash("sha256").update(buffer).digest("hex");
-    const duplicate = findDocumentByHash(hash);
+    const duplicate = findDocumentByHash(hash, wsId);
     if (duplicate && !force) {
       return NextResponse.json(
         {
@@ -74,13 +117,14 @@ export async function POST(request: Request) {
 
     const id = "doc_" + randomUUID();
     mkdirSync(uploadsDir(), { recursive: true });
-    const storagePath = path.join(uploadsDir(), `${id}.pdf`);
+    const ext = path.extname(file.name).toLowerCase() || ".bin";
+    const storagePath = path.join(uploadsDir(), `${id}${ext}`);
     await writeFile(storagePath, buffer);
 
     insertDocument({
       id,
-      workspace_id: defaultWorkspaceId(),
-      owner_id: defaultUserId(),
+      workspace_id: wsId,
+      owner_id: resolveUserId(request),
       filename: file.name,
       storage_path: storagePath,
       page_count: 0,
@@ -91,18 +135,18 @@ export async function POST(request: Request) {
     });
 
     enqueueIngestion(id);
-    const { storage_path: _sp, ...safe } = insertDocumentSafe(id);
+    audit.write(wsId, ctx.userId, "document.uploaded", "document", id, null, { filename: file.name });
+
+    const { storage_path: _sp, ...safe } = getDocument(id)!;
     return NextResponse.json(safe, { status: 202 });
   } catch (err) {
+    if (err instanceof AuthzError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
     console.error("[documents.POST]", err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Upload failed", remediation: "Check the file and try again." },
       { status: 500 }
     );
   }
-}
-
-import { getDocument } from "@/lib/db";
-function insertDocumentSafe(id: string) {
-  return getDocument(id)!;
 }

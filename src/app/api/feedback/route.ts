@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { setFeedbackStatus, incrementCorrectionStats, getQueryLog } from "@/lib/db";
+import { scheduleRepeatedFlagAnalysis } from "@/lib/ingest-hooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,11 @@ export async function POST(request: Request) {
   // "Did this answer your question?" confirmations strengthen the served correction
   if (body.verdict === "confirmed_correct" && (log.correction_id || body.correction_id)) {
     incrementCorrectionStats(log.correction_id ?? body.correction_id!, "confirmed_count");
+  }
+
+  // FR-51: a new flag may complete a repeated-question pattern — re-analyze (debounced).
+  if (body.verdict === "flagged") {
+    scheduleRepeatedFlagAnalysis(log.workspace_id);
   }
 
   return NextResponse.json({ ok: true });

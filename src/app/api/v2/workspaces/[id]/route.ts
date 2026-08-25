@@ -34,9 +34,20 @@ export async function PATCH(request: Request, { params }: Params) {
     const ctx = requireContext(request, id);
     requireAdmin(ctx);
     updateWorkspaceSettings(id, body);
-    audit.write(id, ctx.userId, "workspace.updated", "workspace", id,
-      { name: ctx.workspace.name, approval_required: Boolean(ctx.workspace.approval_required), confidence_threshold: ctx.workspace.confidence_threshold, plan_tier: ctx.workspace.plan_tier },
-      { ...ctx.workspace.name !== undefined && { name: body.name }, ...(body.approval_required !== undefined && { approval_required: body.approval_required }), ...(body.confidence_threshold !== undefined && { confidence_threshold: body.confidence_threshold }), ...(body.plan_tier !== undefined && { plan_tier: body.plan_tier }) });
+    audit.write(
+      id,
+      ctx.userId,
+      "workspace.updated",
+      "workspace",
+      id,
+      {
+        name: ctx.workspace.name,
+        approval_required: Boolean(ctx.workspace.approval_required),
+        confidence_threshold: ctx.workspace.confidence_threshold,
+        plan_tier: ctx.workspace.plan_tier,
+      },
+      body
+    );
     const { getWorkspace } = await import("@/lib/db");
     return json({ workspace: getWorkspace(id) });
   } catch (err) {
