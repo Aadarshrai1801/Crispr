@@ -50,12 +50,14 @@ export async function POST(request: Request, { params }: Params) {
     // Local deployment note: full OAuth handshakes for Slack/Teams/Drive/Notion
     // happen against the provider's consent screen using env-configured app
     // credentials; this endpoint records the resulting connection + tokens.
+    // A connect without credentials is a simulated handshake (local demo), so
+    // the connection lands in "connected" either way.
     const connection = upsertIntegrationConnection({
       workspace_id: id,
       provider: body.provider,
       display_name: body.display_name ?? "",
       auth_credentials_encrypted: body.credentials ? encryptJson(body.credentials) : null,
-      sync_status: body.credentials ? "connected" : "disconnected",
+      sync_status: "connected",
     });
 
     audit.write(id, ctx.userId, "integration.connected", "integration", body.provider, null, {

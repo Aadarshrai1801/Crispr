@@ -361,7 +361,7 @@ export const api = {
   connectIntegration: (wsId: string, provider: string) =>
     jsonRequest<{ connection: IntegrationConnectionDto }>(`/api/v2/workspaces/${wsId}/integrations`, "POST", { provider }),
   disconnectIntegration: (wsId: string, provider: string) =>
-    request(`/api/v2/workspaces/${wsId}/integrations?provider=${provider}`, { method: "DELETE" }).then((r) => handle<{ ok: boolean }>(r)),
+    request(`/api/v2/workspaces/${wsId}/integrations?provider=${encodeURIComponent(provider)}`, { method: "DELETE" }).then((r) => handle<{ ok: boolean }>(r)),
 };
 
 export interface AnalyticsDto {

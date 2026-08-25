@@ -117,9 +117,7 @@ function SettingsTab({ session }: { session: ReturnType<typeof useSession> }) {
     setSavedMsg(null);
     try {
       await api.updateWorkspace(session.workspaceId, patch);
-      await api.workspaces().then((r) => {
-        // refresh via session reload is handled on next render; optimistic message here
-      });
+      session.refresh();
       setSavedMsg(msg);
     } catch (err) {
       setSavedMsg(err instanceof Error ? err.message : "Failed to save");
@@ -133,6 +131,7 @@ function SettingsTab({ session }: { session: ReturnType<typeof useSession> }) {
     setBusyCreate(true);
     try {
       const { workspace } = await api.createWorkspace({ name: newName.trim(), approval_required: newApproval, plan_tier: newTier });
+      session.refresh();
       session.setWorkspace(workspace.id);
       setNewName("");
     } finally {
@@ -563,13 +562,13 @@ function KeysTab({ wsId, planTier }: { wsId: string; planTier: string }) {
 /* ------------------------------ Webhooks ------------------------------ */
 
 const PROVIDER_HINTS: Record<string, string> = {
-  slack: "Point a Slack slash command (/crisp) at POST /api/integrations/slack/events to query documents from chat.",
-  teams: "Register an Azure Bot webhook that forwards messages to /api/integrations/slack/events-compatible payloads.",
-  zapier: "Use “Webhooks by Zapier” with the endpoint URLs below; triggers arrive signed (HMAC-SHA256).",
-  gdrive: "Connect a Drive folder; new files sync into the library automatically when OAuth credentials are configured.",
-  notion: "Connect a Notion database as a live source.",
-  confluence: "Enterprise only — sync a Confluence space.",
-  sharepoint: "Enterprise only — sync a SharePoint document library.",
+  slack: "Fully wired — point a Slack /crisp slash command at POST /api/integrations/slack/events to query your library from chat.",
+  teams: "Registers the connection only. Real message answering needs an Azure Bot registration forwarding payloads to a bot endpoint.",
+  zapier: "Fully wired via webhooks — add an endpoint in the Webhooks tab and consume signed correction/conflict events in Zapier or Make.",
+  gdrive: "Registers the connection only. Folder→library sync needs Google OAuth app credentials (client ID + secret), not configured in this local build.",
+  notion: "Registers the connection only. Database sync needs a Notion integration token, not configured in this local build.",
+  confluence: "Enterprise tier · registers the connection. Space sync needs Confluence OAuth credentials.",
+  sharepoint: "Enterprise tier · registers the connection. Library sync needs SharePoint OAuth credentials.",
 };
 
 function WebhooksTab({ wsId }: { wsId: string }) {
@@ -684,8 +683,10 @@ function IntegrationsTab({ wsId, planTier }: { wsId: string; planTier: string })
   return (
     <div className="space-y-3">
       <p className="max-w-[68ch] text-[13px] leading-relaxed text-ink-soft">
-        Connections register per-workspace integration state; provider OAuth handshakes complete against each vendor using
-        app credentials configured in the environment. Credentials are stored encrypted (AES-256-GCM).
+        Connect records a per-workspace connection (credentials encrypted at rest, AES-256-GCM). In this local build{" "}
+        <span className="font-medium text-ink">Slack</span> and <span className="font-medium text-ink">Zapier/webhooks</span> are
+        fully functional; the other providers store the connection state and stay dormant until their vendor OAuth app
+        credentials are configured.
       </p>
       {error && <p className="text-xs text-danger">{error}</p>}
       <div className="grid gap-2 md:grid-cols-2">
@@ -706,7 +707,7 @@ function IntegrationsTab({ wsId, planTier }: { wsId: string; planTier: string })
                     variant={connected ? "ghost" : "primary"}
                     onClick={() =>
                       connected
-                        ? void api.disconnectIntegration(wsId, p.id).then(load)
+                        ? void api.disconnectIntegration(wsId, p.id).then(load).catch((e) => setError(e.message))
                         : void api.connectIntegration(wsId, p.id).then(load).catch((e) => setError(e.message))
                     }
                   >

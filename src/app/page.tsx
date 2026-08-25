@@ -281,7 +281,7 @@ export default function ChatPage() {
             )}
           </>
         )}
-        <Button variant="ghost" size="sm" onClick={() => (window.location.href = "/documents")} className="hidden sm:inline-flex">
+        <Button variant="ghost" size="sm" onClick={() => (window.location.href = "/documents")} className="ml-auto hidden shrink-0 sm:inline-flex">
           <Gear size={13} weight="light" /> Manage
         </Button>
       </div>

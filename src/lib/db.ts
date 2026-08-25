@@ -52,6 +52,11 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "workspaces", "approval_required", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "workspaces", "confidence_threshold", "REAL NOT NULL DEFAULT 0.55");
   ensureColumn(db, "workspaces", "plan_tier", "TEXT NOT NULL DEFAULT 'team'");
+  // SQLite cannot ADD COLUMN with a non-constant default, so backfill after adding.
+  ensureColumn(db, "workspaces", "created_at", "TEXT");
+  db.exec(
+    `UPDATE workspaces SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE created_at IS NULL OR created_at = ''`
+  );
   ensureColumn(db, "documents", "source_type", "TEXT NOT NULL DEFAULT 'upload'");
   ensureColumn(db, "documents", "source_connection_id", "TEXT");
   ensureColumn(db, "documents", "current_version_id", "TEXT");
@@ -267,7 +272,7 @@ function seed(db: Database.Database) {
   const ws = db.prepare("SELECT id FROM workspaces LIMIT 1").get();
   if (!ws) {
     db.prepare(
-      "INSERT INTO workspaces (id, name, member_ids, owner_id, approval_required, confidence_threshold, plan_tier) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO workspaces (id, name, member_ids, owner_id, approval_required, confidence_threshold, plan_tier, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
     ).run(wsId, "Personal Workspace", JSON.stringify([ownerId]), ownerId, 0, 0.55, "team");
   } else {
     wsId = (ws as { id: string }).id;
@@ -353,8 +358,8 @@ export function insertWorkspace(input: NewWorkspaceInput): WorkspaceRow {
   const id = input.id ?? "ws_" + randomUUID();
   getDb()
     .prepare(
-      `INSERT INTO workspaces (id, name, owner_id, member_ids, approval_required, confidence_threshold, plan_tier)
-       VALUES (@id, @name, @owner_id, '[]', @approval_required, @confidence_threshold, @plan_tier)`
+      `INSERT INTO workspaces (id, name, owner_id, member_ids, approval_required, confidence_threshold, plan_tier, created_at)
+       VALUES (@id, @name, @owner_id, '[]', @approval_required, @confidence_threshold, @plan_tier, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
     )
     .run({
       id,

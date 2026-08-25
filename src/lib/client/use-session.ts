@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { api, type UserDto, type WorkspaceDto } from "./api";
 
 const USER_KEY = "crisp-active-user";
@@ -13,108 +13,155 @@ export interface Session {
   workspaces: WorkspaceDto[];
   role: string | null;
   hydrated: boolean;
+  setUser: (id: string) => void;
+  setWorkspace: (id: string) => void;
+  /** Reload workspaces (+ role) for the acting user after server-side changes. */
+  refresh: () => void;
+}
+
+interface SessionState {
+  userId: string | null;
+  workspaceId: string;
+  users: UserDto[];
+  workspaces: WorkspaceDto[];
+  role: string | null;
+  hydrated: boolean;
 }
 
 /**
  * Demo-grade session for the local app: active user + workspace are chosen in
  * the sidebar and sent as headers on every API call. All authorization is
  * still enforced server-side (RBAC FR-34); these headers only identify the actor.
+ *
+ * State lives in one module-level store shared by every useSession() caller,
+ * so switching user/workspace or saving settings updates the whole app live.
  */
-export function useSession() {
-  const [userId, setUserIdState] = useState<string | null>(null);
-  const [workspaceId, setWorkspaceIdState] = useState<string>("ws_default");
-  const [users, setUsers] = useState<UserDto[]>([]);
-  const [workspaces, setWorkspaces] = useState<WorkspaceDto[]>([]);
-  const [role, setRole] = useState<string | null>(null);
-  const [hydrated, setHydrated] = useState(false);
+const INITIAL: SessionState = {
+  userId: null,
+  workspaceId: "ws_default",
+  users: [],
+  workspaces: [],
+  role: null,
+  hydrated: false,
+};
 
-  useEffect(() => {
-    let storedUser: string | null = null;
-    try {
-      const u = localStorage.getItem(USER_KEY);
-      if (u) {
-        storedUser = u;
-        setUserIdState(u);
-      }
-      const w = localStorage.getItem(WS_KEY);
-      if (w) setWorkspaceIdState(w);
-    } catch {
-      /* ignore */
-    }
+let state: SessionState = INITIAL;
+const listeners = new Set<() => void>();
+let hydrateStarted = false;
 
-    void (async () => {
-      try {
-        const { users: allUsers } = await api.users();
-        setUsers(allUsers);
-        // Resolve effective user: stored -> first available.
-        const effectiveUser =
-          storedUser && allUsers.some((x) => x.id === storedUser) ? storedUser : (allUsers[0]?.id ?? null);
-        if (!storedUser && effectiveUser) setUserIdState(effectiveUser);
-        const wsList = effectiveUser ? await api.workspaces(effectiveUser).then((r) => r.workspaces) : [];
-        setWorkspaces(wsList);
-        const storedWs = (() => {
-          try {
-            return localStorage.getItem(WS_KEY);
-          } catch {
-            return null;
-          }
-        })();
-        if (storedWs && wsList.some((w) => w.id === storedWs)) {
-          setWorkspaceIdState(storedWs);
-        } else if (wsList[0]) {
-          setWorkspaceIdState(wsList[0].id);
-        }
-      } catch {
-        /* server unreachable — leave defaults */
-      } finally {
-        setHydrated(true);
-      }
-    })();
-  }, []);
+function setState(patch: Partial<SessionState>) {
+  state = { ...state, ...patch };
+  for (const l of listeners) l();
+}
 
-  const setUser = useCallback((id: string) => {
-    setUserIdState(id);
-    try {
-      localStorage.setItem(USER_KEY, id);
-    } catch {
-      /* ignore */
-    }
-    // Reload workspace list for the new identity and reset to their default view.
-    void api.workspaces(id).then(({ workspaces: ws }) => {
-      setWorkspaces(ws);
-      if (ws.length && !ws.some((w) => w.id === workspaceId)) {
-        setWorkspaceIdState(ws[0].id);
-        try {
-          localStorage.setItem(WS_KEY, ws[0].id);
-        } catch {
-          /* ignore */
-        }
-      }
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  if (!hydrateStarted) {
+    hydrateStarted = true;
+    void hydrate();
+  }
+  return () => listeners.delete(listener);
+}
+
+function persist(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function fetchRole(workspaceId: string, userId: string): Promise<string | null> {
+  try {
+    const { members } = await api.members(workspaceId);
+    return members.find((m) => m.user_id === userId)?.role ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function hydrate() {
+  try {
+    const storedUser = localStorage.getItem(USER_KEY);
+    const storedWs = localStorage.getItem(WS_KEY);
+    const { users: allUsers } = await api.users();
+    // Resolve effective user: stored -> first available.
+    const effectiveUser =
+      storedUser && allUsers.some((x) => x.id === storedUser) ? storedUser : (allUsers[0]?.id ?? null);
+    const wsList = effectiveUser ? await api.workspaces(effectiveUser).then((r) => r.workspaces) : [];
+    const activeWs =
+      storedWs && wsList.some((w) => w.id === storedWs) ? storedWs : (wsList[0]?.id ?? INITIAL.workspaceId);
+    const role = effectiveUser ? await fetchRole(activeWs, effectiveUser) : null;
+    setState({
+      userId: effectiveUser,
+      users: allUsers,
+      workspaces: wsList,
+      workspaceId: activeWs,
+      role,
+      hydrated: true,
     });
-  }, [workspaceId]);
+  } catch {
+    /* server unreachable — leave defaults */
+    setState({ hydrated: true });
+  }
+}
 
-  const setWorkspace = useCallback((id: string) => {
-    setWorkspaceIdState(id);
+function setUser(id: string) {
+  persist(USER_KEY, id);
+  setState({ userId: id, role: null });
+  void (async () => {
     try {
-      localStorage.setItem(WS_KEY, id);
+      const wsList = await api.workspaces(id).then((r) => r.workspaces);
+      // Keep the current workspace when shared with the new identity; otherwise reset to their first.
+      const nextWs = wsList.some((w) => w.id === state.workspaceId)
+        ? state.workspaceId
+        : (wsList[0]?.id ?? state.workspaceId);
+      persist(WS_KEY, nextWs);
+      const role = await fetchRole(nextWs, id);
+      setState({ workspaces: wsList, workspaceId: nextWs, role });
+    } catch {
+      /* keep previous list */
+    }
+  })();
+}
+
+function setWorkspace(id: string) {
+  persist(WS_KEY, id);
+  setState({ workspaceId: id });
+  if (state.userId) void fetchRole(id, state.userId).then((role) => setState({ role }));
+}
+
+function refresh() {
+  const uid = state.userId;
+  if (!uid) return;
+  void (async () => {
+    try {
+      const wsList = await api.workspaces(uid).then((r) => r.workspaces);
+      const patch: Partial<SessionState> = { workspaces: wsList };
+      if (wsList.length && !wsList.some((w) => w.id === state.workspaceId)) {
+        // Active workspace disappeared (e.g. membership revoked) — fall back to their first.
+        const nextWs = wsList[0].id;
+        persist(WS_KEY, nextWs);
+        patch.workspaceId = nextWs;
+        patch.role = await fetchRole(nextWs, uid);
+      } else {
+        patch.role = await fetchRole(state.workspaceId, uid);
+      }
+      setState(patch);
     } catch {
       /* ignore */
     }
-  }, []);
+  })();
+}
 
-  // Track the acting user's role in the active workspace (for UI affordances only).
-  useEffect(() => {
-    if (!userId || !workspaceId || !hydrated) return;
-    let cancelled = false;
-    void api.members(workspaceId).then(({ members }) => {
-      if (cancelled) return;
-      const mine = members.find((m) => m.user_id === userId);
-      setRole(mine?.role ?? null);
-    }).catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [userId, workspaceId, hydrated]);
-
-  return { userId, setUser, workspaceId, setWorkspace, users, workspaces, role, hydrated };
+export function useSession(): Session {
+  const snapshot = useSyncExternalStore(
+    subscribe,
+    () => state,
+    () => INITIAL
+  );
+  return useMemo<Session>(
+    () => ({ ...snapshot, setUser, setWorkspace, refresh }),
+    [snapshot]
+  );
 }

@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { answerQuestion } from "@/lib/retrieval";
 import { defaultWorkspaceId } from "@/lib/db";
 import { config } from "@/lib/config";
-import { requireContext } from "@/lib/rbac";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,13 +45,6 @@ export async function POST(request: Request) {
     }
 
     const wsId = config.slackDefaultWorkspaceId || defaultWorkspaceId();
-    // The integration acts on behalf of the workspace with Viewer-equivalent query rights.
-    const syntheticRequest = new Request("http://local", { headers: { "x-crisp-workspace-id": wsId } });
-    try {
-      await requireContext(syntheticRequest, wsId);
-    } catch {
-      // Fall back to default membership context when no explicit mapping exists.
-    }
 
     const { readyDocumentIds } = await import("@/lib/retrieval");
     const docIds = readyDocumentIds(wsId);
