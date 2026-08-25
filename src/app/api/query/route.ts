@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { logger } from "@/lib/logger";
 import { z } from "zod";
 import { answerQuestion, readyDocumentIds, resolveQueryScope } from "@/lib/retrieval";
 import { defaultWorkspaceId, getDocument, listDocuments } from "@/lib/db";
@@ -63,7 +64,7 @@ export async function POST(request: Request) {
     if (err instanceof z.ZodError) {
       return NextResponse.json({ error: "Invalid request", details: err.issues }, { status: 400 });
     }
-    console.error("[query.POST]", err);
+    logger.error({ err }, "[query.POST]");
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Query failed" },
       { status: 500 }

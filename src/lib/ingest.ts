@@ -5,20 +5,32 @@ import { extractAnyDocument } from "./formats";
 import { ocrPdfPage } from "./ocr";
 import { embed } from "./embeddings";
 import { upsertChunkVectors } from "./vector";
-import { getDocument, updateDocumentStatus } from "./db";
-
-const queue: string[] = [];
-let pumping = false;
+import {
+  claimNextIngestJob,
+  completeIngestJob,
+  enqueueIngestJob,
+  failIngestJob,
+  getDocument,
+  updateDocumentStatus,
+} from "./db";
+import { logger } from "./logger";
 
 declare global {
-  // eslint-disable-next-line no-var
-  var __crispIngestBusy: boolean | undefined;
-  // eslint-disable-next-line no-var
   var __crispConflictScanTimers: Map<string, ReturnType<typeof setTimeout>> | undefined;
 }
 
+const MAX_JOB_ATTEMPTS = 3;
+
+let pumping = false;
+let recovered = false;
+
+/**
+ * N12: the ingestion queue is a SQLite table, not an in-memory array — jobs
+ * survive process restarts. On the first pump after boot, jobs left in
+ * `processing` by a crashed process are re-claimed automatically.
+ */
 export function enqueueIngestion(documentId: string) {
-  if (!queue.includes(documentId)) queue.push(documentId);
+  enqueueIngestJob(documentId);
   void pump();
 }
 
@@ -26,16 +38,25 @@ async function pump() {
   if (pumping) return;
   pumping = true;
   try {
-    while (queue.length) {
-      const id = queue.shift()!;
+    if (!recovered) recovered = true; // interrupted 'processing' rows are re-claimable by design
+    for (;;) {
+      const job = claimNextIngestJob();
+      if (!job) break;
       try {
-        await ingest(id);
-        scheduleConflictScan(getDocument(id)?.workspace_id);
+        await ingest(job.document_id);
+        completeIngestJob(job.id);
+        scheduleConflictScan(getDocument(job.document_id)?.workspace_id);
       } catch (err) {
-        console.error(`[ingest] ${id} failed:`, err);
-        updateDocumentStatus(id, {
-          status: "failed",
-          error: err instanceof Error ? err.message : "Unknown ingestion failure",
+        const message = err instanceof Error ? err.message : "Unknown ingestion failure";
+        const willRetry = job.attempts < MAX_JOB_ATTEMPTS && !(err instanceof PermanentIngestError);
+        logger.error(
+          { document_id: job.document_id, attempt: job.attempts, will_retry: willRetry, err },
+          "ingestion failed"
+        );
+        failIngestJob(job.id, message, willRetry);
+        updateDocumentStatus(job.document_id, {
+          status: willRetry ? "processing" : "failed",
+          error: willRetry ? `${message} (retrying)` : message,
         });
       }
     }
@@ -43,6 +64,9 @@ async function pump() {
     pumping = false;
   }
 }
+
+/** Errors that retrying can never fix (e.g. unsupported/corrupt file). */
+export class PermanentIngestError extends Error {}
 
 /**
  * FR-43: proactive conflict detection runs after new content lands in a
@@ -62,9 +86,9 @@ export function scheduleConflictScan(workspaceId?: string, delayMs = 30_000) {
         try {
           const { scanWorkspaceConflicts } = await import("./conflicts");
           const result = await scanWorkspaceConflicts(workspaceId);
-          if (result.alerts_created > 0) console.log(`[conflicts] ${workspaceId}: ${result.alerts_created} new alert(s)`);
+          if (result.alerts_created > 0) logger.info({ workspace_id: workspaceId, alerts_created: result.alerts_created }, "conflict scan created alerts");
         } catch (err) {
-          console.warn("[conflicts] scan failed:", err instanceof Error ? err.message : err);
+          logger.warn({ err, workspace_id: workspaceId }, "conflict scan failed");
         }
       })();
     }, delayMs)
@@ -78,8 +102,9 @@ export async function ingest(documentId: string): Promise<void> {
 
   const buffer = await readFile(doc.storage_path);
 
-  let { pages, pageCount, format } = await extractAnyDocument(buffer, doc.filename);
-  pageCount = pageCount || pages.length;
+  const extracted = await extractAnyDocument(buffer, doc.filename);
+  const { pages, format } = extracted;
+  const pageCount: number = extracted.pageCount || pages.length;
 
   // OCR fallback for image-only / low-text PDF pages
   let ocrUsed = false;
@@ -97,7 +122,8 @@ export async function ingest(documentId: string): Promise<void> {
 
   const chunks = chunkPages(pages, documentId);
   if (!chunks.length) {
-    throw new Error(
+    // Retrying a file with no extractable text can never succeed.
+    throw new PermanentIngestError(
       lowConfidence > 0 && format === "pdf"
         ? "No extractable text found — the file appears to be scanned or handwritten and OCR could not recover it."
         : "The file contains no extractable text content."

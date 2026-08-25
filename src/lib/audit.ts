@@ -1,4 +1,5 @@
 import { appendAudit, listAuditEntries } from "./db";
+import { logger } from "./logger";
 import type { AuditActionType } from "./types";
 
 /**
@@ -28,7 +29,7 @@ export const audit = {
       });
     } catch (err) {
       // Auditing must never break the primary action; surface loudly instead.
-      console.error("[audit] failed to append entry:", err);
+      logger.error({ err }, "failed to append audit entry");
       return undefined;
     }
   },

@@ -20,7 +20,6 @@ import {
   type MemberDto,
   type UserDto,
   type WebhookEndpointDto,
-  type WorkspaceDto,
 } from "@/lib/client/api";
 import { useSession } from "@/lib/client/use-session";
 import { Button } from "@/components/ui/button";

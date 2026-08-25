@@ -1,6 +1,6 @@
 import { config } from "./config";
-import { embedOne } from "./embeddings";
 import { generateConflictVerdicts, LlmNotConfiguredError } from "./llm";
+import { logger } from "./logger";
 import {
   findExistingConflict,
   getDocument,
@@ -98,7 +98,7 @@ export async function scanWorkspaceConflicts(workspaceId: string, actorId?: stri
       }))
     );
   } catch (err) {
-    if (!(err instanceof LlmNotConfiguredError)) console.warn("[conflicts] LLM verification failed:", err);
+    if (!(err instanceof LlmNotConfiguredError)) logger.warn({ err }, "conflict LLM verification failed");
     llmVerified = false;
   }
 

@@ -3,8 +3,9 @@
  * to avoid import cycles between the feedback path and the suggestion engine.
  */
 
+import { logger } from "./logger";
+
 declare global {
-  // eslint-disable-next-line no-var
   var __crispFlagAnalysisTimers: Map<string, ReturnType<typeof setTimeout>> | undefined;
 }
 
@@ -21,9 +22,9 @@ export function scheduleRepeatedFlagAnalysis(workspaceId: string, delayMs = 45_0
         try {
           const { generateRepeatedFlagSuggestions } = await import("./suggestions");
           const created = await generateRepeatedFlagSuggestions(workspaceId);
-          if (created > 0) console.log(`[suggestions] ${workspaceId}: ${created} repeated-flag suggestion(s) generated`);
+          if (created > 0) logger.info({ workspace_id: workspaceId, created }, "repeated-flag suggestions generated");
         } catch (err) {
-          console.warn("[suggestions] analysis failed:", err instanceof Error ? err.message : err);
+          logger.warn({ err, workspace_id: workspaceId }, "repeated-flag analysis failed");
         }
       })();
     }, delayMs)

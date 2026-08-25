@@ -5,7 +5,7 @@ import { ArrowClockwise, ChartBar, FileText } from "@phosphor-icons/react";
 import { api, type AnalyticsDto } from "@/lib/client/api";
 import { useSession } from "@/lib/client/use-session";
 import { Button } from "@/components/ui/button";
-import { Chip, EmptyState, Skeleton } from "@/components/ui/primitives";
+import { Chip, Skeleton } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 export default function AnalyticsPage() {

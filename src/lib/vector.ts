@@ -1,4 +1,4 @@
-﻿import * as lancedb from "@lancedb/lancedb";
+import * as lancedb from "@lancedb/lancedb";
 import { mkdirSync } from "node:fs";
 import { lanceDbDir } from "./config";
 
@@ -8,7 +8,6 @@ function cosineSearch(table: lancedb.Table, vector: number[]): lancedb.VectorQue
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var __crispLance: lancedb.Connection | undefined;
 }
 
@@ -66,12 +65,24 @@ export async function upsertChunkVectors(rows: (ChunkVectorRow & { vector: numbe
   await table.add(rows as unknown as Record<string, unknown>[], { mode: "append" });
 }
 
+/**
+ * LanceDB filters are SQL-ish strings without bound parameters; document ids
+ * are always internally generated `doc_<uuid>` values, and we escape quotes
+ * anyway so no external input can break out of the literal.
+ */
+function safeFilterValue(value: string): string {
+  if (!/^doc_[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`Refusing to build filter for unexpected id format: ${value.slice(0, 8)}...`);
+  }
+  return value.replace(/'/g, "''");
+}
+
 export async function deleteVectorsForDocument(documentId: string) {
   const db = await getVectorDb();
   const names = await db.tableNames();
   if (!names.includes("chunks")) return;
   const table = await db.openTable("chunks");
-  await table.delete(`document_id = '${documentId}'`);
+  await table.delete(`document_id = '${safeFilterValue(documentId)}'`);
 }
 
 function simFromDistance(r: Record<string, unknown>): number {

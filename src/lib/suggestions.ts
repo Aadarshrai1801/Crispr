@@ -14,6 +14,7 @@ import {
 import { searchChunksWorkspace } from "./vector";
 import { createCorrectionFromSuggestion } from "./corrections";
 import { audit as auditLog } from "./audit";
+import { logger } from "./logger";
 
 /**
  * Pillar E — compounding intelligence.
@@ -157,7 +158,7 @@ export async function generateRepeatedFlagSuggestions(workspaceId: string): Prom
         if (draft && !draft.includes("INSUFFICIENT_CONTEXT")) suggestedText = draft;
       }
     } catch (err) {
-      if (!(err instanceof LlmNotConfiguredError)) console.warn("[suggestions] synthesis failed:", err);
+      if (!(err instanceof LlmNotConfiguredError)) logger.warn({ err }, "suggestion synthesis failed");
       rationale += " A drafted answer could not be auto-generated — please supply the correct answer.";
     }
 

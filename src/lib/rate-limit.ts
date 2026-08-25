@@ -27,7 +27,6 @@ const TIERS: Record<string, RateTier> = {
 };
 
 declare global {
-  // eslint-disable-next-line no-var
   var __crispRateBuckets: Map<string, { tokens: number; updatedAt: number }> | undefined;
 }
 

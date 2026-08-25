@@ -8,6 +8,9 @@
     "build": "node scripts/clean.mjs && next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "postinstall": "node scripts/copy-pdf-worker.mjs"
   },
   "dependencies": {
@@ -24,6 +27,7 @@
     "mammoth": "^1.12.1",
     "motion": "^12.23.24",
     "next": "^15.5.4",
+    "pino": "^10.3.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-pdf": "^10.2.0",
@@ -38,7 +42,10 @@
     "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.24",
     "tailwindcss": "^4.1.14",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.11"
   }
 }

@@ -31,7 +31,6 @@ function GroundednessMeter({ score }: { score: number }) {
 
 export function AnswerCard({
   result,
-  documentNamesById,
   isLatestVariant,
   onCite,
   onThumbsUp,

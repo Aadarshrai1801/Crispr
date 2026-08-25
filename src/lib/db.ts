@@ -13,13 +13,11 @@ import type {
   CorrectionStatus,
   DocumentRow,
   DocumentSourceType,
-  DocumentStatus,
   DocumentVersionRow,
   FeedbackStatus,
   IntegrationConnectionRow,
   PlanTier,
   QueryLogRow,
-  SourceType,
   SuggestedCorrectionRow,
   UserRow,
   WebhookEndpointRow,
@@ -32,11 +30,8 @@ import { hashPassword } from "./auth";
 import { sha256Hex } from "./crypto-utils";
 
 declare global {
-  // eslint-disable-next-line no-var
   var __crispDb: Database.Database | undefined;
-}
-
-/* ------------------------- migrations ------------------------- */
+}/* ------------------------- migrations ------------------------- */
 
 function tableColumns(db: Database.Database, table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
@@ -171,6 +166,9 @@ function migrate(db: Database.Database) {
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_documents_ws ON documents(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_corrections_ws ON corrections(workspace_id, status);
+    CREATE INDEX IF NOT EXISTS idx_qlog_ws_time ON query_logs(workspace_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_qlog_user ON query_logs(user_id);
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -178,6 +176,16 @@ function migrate(db: Database.Database) {
       expires_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+    CREATE TABLE IF NOT EXISTS ingest_jobs (
+      id TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_jobs_status ON ingest_jobs(status, created_at);
   `);
 }
 
@@ -419,6 +427,49 @@ export function getSession(token: string): SessionInfo | undefined {
 
 export function deleteSession(token: string): void {
   getDb().prepare("DELETE FROM sessions WHERE token_hash = ?").run(sha256Hex(token));
+}
+
+/* ------------------------- Ingestion queue (durable, N12) ------------------------- */
+
+export interface IngestJobRow {
+  id: string;
+  document_id: string;
+  status: "pending" | "processing" | "done" | "failed";
+  attempts: number;
+  last_error: string | null;
+}
+
+export function enqueueIngestJob(documentId: string): void {
+  getDb()
+    .prepare("INSERT OR IGNORE INTO ingest_jobs (id, document_id) VALUES (?, ?)")
+    .run("job_" + randomUUID(), documentId);
+}
+
+/** Atomically claims the oldest pending job (or reclaims an interrupted one). */
+export function claimNextIngestJob(): IngestJobRow | undefined {
+  const db = getDb();
+  const row = db
+    .prepare(
+      "SELECT * FROM ingest_jobs WHERE status IN ('pending','processing') ORDER BY created_at ASC LIMIT 1"
+    )
+    .get() as IngestJobRow | undefined;
+  if (!row) return undefined;
+  db.prepare(
+    "UPDATE ingest_jobs SET status='processing', attempts = attempts + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
+  ).run(row.id);
+  return { ...row, status: "processing", attempts: row.attempts + 1 };
+}
+
+export function completeIngestJob(jobId: string): void {
+  getDb().prepare("UPDATE ingest_jobs SET status='done', last_error=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(jobId);
+}
+
+export function failIngestJob(jobId: string, error: string, willRetry: boolean): void {
+  getDb()
+    .prepare(
+      "UPDATE ingest_jobs SET status=?, last_error=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
+    )
+    .run(willRetry ? "pending" : "failed", error.slice(0, 500), jobId);
 }
 
 /* ------------------------- Workspaces ------------------------- */

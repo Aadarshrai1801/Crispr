@@ -40,7 +40,7 @@ export default function DocumentsPage() {
   const [versionBusy, setVersionBusy] = useState(false);
   const [fetchNotice, setFetchNotice] = useState<string | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
-  const { activeIds, setActiveIds, hydrated } = useActiveDocuments();
+  const { activeIds, setActiveIds } = useActiveDocuments();
   const router = useRouter();
 
   const load = useCallback(() => api.listDocuments().then(setDocs).catch(() => setDocs([])), []);

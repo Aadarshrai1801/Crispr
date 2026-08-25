@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { logger } from "@/lib/logger";
 import { z } from "zod";
 import { submitCorrection } from "@/lib/corrections";
 import { getQueryLog } from "@/lib/db";
@@ -58,7 +59,7 @@ export async function POST(request: Request) {
   } catch (err) {
     if (err instanceof ApiKeyError) return NextResponse.json({ error: err.message }, { status: err.status });
     if (err instanceof z.ZodError) return NextResponse.json({ error: "Invalid request", details: err.issues }, { status: 400 });
-    console.error("[public.corrections]", err);
+    logger.error({ err }, "[public.corrections]");
     return NextResponse.json({ error: err instanceof Error ? err.message : "Failed to save correction" }, { status: 500 });
   }
 }

@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
+import { logger } from "@/lib/logger";
 import { uploadsDir } from "@/lib/config";
 import {
   countDocuments,
@@ -148,7 +149,7 @@ export async function POST(request: Request) {
     if (err instanceof AuthzError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    console.error("[documents.POST]", err);
+    logger.error({ err }, "[documents.POST]");
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Upload failed", remediation: "Check the file and try again." },
       { status: 500 }

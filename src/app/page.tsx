@@ -16,7 +16,7 @@ import { api, type CitationDto, type QueryResultDto } from "@/lib/client/api";
 import { useActiveDocuments } from "@/lib/client/use-active-documents";
 import type { DocumentDto } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
-import { Chip, EmptyState } from "@/components/ui/primitives";
+import { EmptyState } from "@/components/ui/primitives";
 import { AnswerCard } from "@/components/chat/answer-card";
 import { FeedbackModal } from "@/components/chat/feedback-modal";
 import { CorrectionForm } from "@/components/chat/correction-form";

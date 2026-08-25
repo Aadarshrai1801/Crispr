@@ -13,7 +13,6 @@ export interface CorrectionDraft {
   document_count: number;
 }
 
-type SubmitOutcome = { ok: true; correction: CorrectionDto } | { ok: false; error: string };
 
 export function CorrectionForm({
   draft,

@@ -5,6 +5,8 @@
  * instead of failing the document (per PRD edge-case policy).
  */
 
+import { logger } from "./logger";
+
 export async function ocrPdfPage(
   buffer: Buffer,
   pageNumber: number,
@@ -34,7 +36,7 @@ export async function ocrPdfPage(
       await worker.terminate();
     }
   } catch (err) {
-    console.warn(`[ocr] page ${pageNumber} OCR unavailable:`, err instanceof Error ? err.message : err);
+    logger.warn({ page_number: pageNumber, err }, "OCR unavailable for page");
     return { text: "", ok: false };
   }
 }

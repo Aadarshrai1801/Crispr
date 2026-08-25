@@ -1,8 +1,7 @@
-import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSession, getMembership, getUserByEmail, getUser, listWorkspacesForUser } from "@/lib/db";
 import { SESSION_COOKIE, SESSION_TTL_MS, verifyPassword } from "@/lib/auth";
-import { AuthzError, devImpersonationEnabled, resolveUserId } from "@/lib/rbac";
+import { AuthzError, devImpersonationEnabled } from "@/lib/rbac";
 import { apiError, json } from "@/lib/api-helpers";
 import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 

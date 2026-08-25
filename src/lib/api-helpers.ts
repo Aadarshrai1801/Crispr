@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AuthzError } from "./rbac";
 import { ApprovalError } from "./corrections";
 import { LlmNotConfiguredError } from "./llm";
+import { logger } from "./logger";
 
 /** Uniform error mapping for v2 API routes. */
 export function apiError(err: unknown) {
@@ -21,9 +22,10 @@ export function apiError(err: unknown) {
   if (err instanceof z.ZodError) {
     return NextResponse.json({ error: "Invalid request", details: err.issues }, { status: 400 });
   }
-  console.error("[api]", err);
+  // Nice-to-have #1: full detail stays server-side; clients get a generic body.
+  logger.error({ err }, "unhandled API route error");
   return NextResponse.json(
-    { error: err instanceof Error ? err.message : "Request failed" },
+    { error: "Internal server error" },
     { status: 500 }
   );
 }

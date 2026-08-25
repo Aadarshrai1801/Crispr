@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { logger } from "@/lib/logger";
 import { answerQuestion } from "@/lib/retrieval";
 import { defaultWorkspaceId } from "@/lib/db";
 import { config } from "@/lib/config";
@@ -90,7 +91,7 @@ export async function POST(request: Request) {
       text: `${caveat}*Q:* ${question}\n*A:* ${result.answer.replace(/\[(\d+)\]/g, "")}${citationLines ? `\n*Citations:*\n${citationLines}` : ""}`,
     });
   } catch (err) {
-    console.error("[slack.events]", err);
+    logger.error({ err }, "[slack.events]");
     return NextResponse.json(
       { response_type: "ephemeral", text: "Crisp could not answer right now. Try again shortly." },
       { status: 200 }

@@ -4,6 +4,7 @@ import { deleteVectorsForDocument, removeCorrectionVector } from "@/lib/vector";
 import { deleteDocumentFile } from "@/lib/ingest";
 import { audit } from "@/lib/audit";
 import { requireContext, requireContributor, AuthzError } from "@/lib/rbac";
+import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,7 +63,7 @@ export async function DELETE(request: Request, { params }: Params) {
     return NextResponse.json({ ok: true });
   } catch (err) {
     if (err instanceof AuthzError) return NextResponse.json({ error: err.message }, { status: err.status });
-    console.error("[documents.DELETE]", err);
+    logger.error({ err }, "[documents.DELETE]");
     return NextResponse.json({ error: err instanceof Error ? err.message : "Delete failed" }, { status: 500 });
   }
 }

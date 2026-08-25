@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
+import { logger } from "@/lib/logger";
 import { uploadsDir } from "@/lib/config";
 import { findDocumentByHash, getDocument, insertDocument } from "@/lib/db";
 import { enqueueIngestion } from "@/lib/ingest";
@@ -64,7 +65,7 @@ export async function POST(request: Request) {
     return NextResponse.json(safe, { status: 202 });
   } catch (err) {
     if (err instanceof ApiKeyError) return NextResponse.json({ error: err.message }, { status: err.status });
-    console.error("[public.documents]", err);
+    logger.error({ err }, "[public.documents]");
     return NextResponse.json({ error: err instanceof Error ? err.message : "Upload failed" }, { status: 500 });
   }
 }

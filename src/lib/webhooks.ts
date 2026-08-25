@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { config } from "./config";
 import { hmacSha256Hex } from "./crypto-utils";
 import { listWebhookEndpoints } from "./db";
+import { logger } from "./logger";
 import type { WebhookEndpointRow } from "./types";
 
 /**
@@ -55,7 +56,9 @@ async function deliver(endpoint: WebhookEndpointRow, payload: DispatchPayload) {
       signal: controller.signal,
     }).finally(() => clearTimeout(timer));
   } catch (err) {
-    console.warn(`[webhooks] delivery to ${endpoint.url} failed:`, err instanceof Error ? err.message : err);
+    // Never log the endpoint URL (may embed secrets in query strings).
+    logger.warn({ event: payload.event, endpoint_id: endpoint.id }, "webhook delivery failed");
+    void err;
   }
 }
 
@@ -69,6 +72,6 @@ export function dispatchWebhook(event: WebhookEvent, workspaceId: string, data: 
       void deliver(endpoint, { event, workspace_id: workspaceId, data });
     }
   } catch (err) {
-    console.warn("[webhooks] dispatch failed:", err);
+    logger.warn({ err, workspace_id: workspaceId }, "webhook dispatch failed");
   }
 }

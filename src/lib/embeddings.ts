@@ -5,7 +5,6 @@ import { config, modelsCacheDir } from "./config";
 import { setEmbedDim } from "./vector";
 
 declare global {
-  // eslint-disable-next-line no-var
   var __crispEmbedder: Promise<FeatureExtractionPipeline> | undefined;
 }
 

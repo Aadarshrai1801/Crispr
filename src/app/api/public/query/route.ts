@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { logger } from "@/lib/logger";
 import { z } from "zod";
 import { answerQuestion, readyDocumentIds, resolveQueryScope } from "@/lib/retrieval";
 import { getDocument, listDocuments } from "@/lib/db";
@@ -62,7 +63,7 @@ export async function POST(request: Request) {
   } catch (err) {
     if (err instanceof ApiKeyError) return NextResponse.json({ error: err.message }, { status: err.status });
     if (err instanceof z.ZodError) return NextResponse.json({ error: "Invalid request", details: err.issues }, { status: 400 });
-    console.error("[public.query]", err);
+    logger.error({ err }, "[public.query]");
     return NextResponse.json({ error: err instanceof Error ? err.message : "Query failed" }, { status: 500 });
   }
 }
