@@ -61,8 +61,8 @@ export function scheduleConflictScan(workspaceId?: string, delayMs = 30_000) {
       void (async () => {
         try {
           const { scanWorkspaceConflicts } = await import("./conflicts");
-          const created = await scanWorkspaceConflicts(workspaceId);
-          if (created > 0) console.log(`[conflicts] ${workspaceId}: ${created} new alert(s)`);
+          const result = await scanWorkspaceConflicts(workspaceId);
+          if (result.alerts_created > 0) console.log(`[conflicts] ${workspaceId}: ${result.alerts_created} new alert(s)`);
         } catch (err) {
           console.warn("[conflicts] scan failed:", err instanceof Error ? err.message : err);
         }

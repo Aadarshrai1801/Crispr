@@ -7,6 +7,7 @@ import {
   Check,
   Flag,
   SealCheck,
+  ShieldWarning,
   ThumbsUp,
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -101,6 +102,17 @@ export function AnswerCard({
         {result.source_type === "no_answer" && (
           <Chip tone="warn">
             <WarningCircle size={10} weight="fill" /> Not answerable from these documents
+          </Chip>
+        )}
+        {/* FR-42: answers below the workspace confidence threshold are flagged for review */}
+        {result.confidence?.flagged_needs_review && (
+          <Chip tone="warn" className="animate-pulse">
+            <ShieldWarning size={10} weight="fill" /> Needs review · {Math.round(result.confidence.score * 100)}% confidence
+          </Chip>
+        )}
+        {result.narrowed_search && (
+          <Chip tone="warn">
+            <WarningCircle size={10} weight="fill" /> Narrowing search — only the 50 most recent documents were queried
           </Chip>
         )}
         {!isLatestVariant && <Chip>superseded attempt</Chip>}

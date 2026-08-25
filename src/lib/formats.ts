@@ -1,4 +1,5 @@
 import { extractPdfPages } from "./pdf-extract";
+import type { Worksheet, Row, Cell } from "exceljs";
 
 /**
  * FR-40: first-class ingestion for Word (.docx), Excel (.xlsx), scanned/OCR'd
@@ -99,17 +100,16 @@ async function extractDocx(buffer: Buffer): Promise<ExtractionResult> {
 /* ------------------------------ XLSX ------------------------------ */
 
 async function extractXlsx(buffer: Buffer): Promise<ExtractionResult> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const ExcelJS = (require("exceljs") as typeof import("exceljs")).default ?? require("exceljs");
+  const ExcelJS = await import("exceljs");
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as ArrayBuffer);
   const pages: ExtractedPage[] = [];
-  workbook.eachSheet((sheet) => {
+  workbook.eachSheet((sheet: Worksheet) => {
     const lines: string[] = [`## Sheet: ${sheet.name}`];
     let rowCount = 0;
-    sheet.eachRow((row) => {
+    sheet.eachRow((row: Row) => {
       const cells: string[] = [];
-      row.eachCell({ includeEmpty: true }, (cell) => {
+      row.eachCell({ includeEmpty: true }, (cell: Cell) => {
         const v = cell.value;
         let s = "";
         if (v === null || v === undefined) s = "";
@@ -222,13 +222,11 @@ async function extractEmail(buffer: Buffer, filename: string): Promise<Extractio
   if (extensionOf(filename) === "msg") {
     // Outlook binary .msg — best-effort via msgreader when available.
     try {
-      const { MsgReader } = await import("@kenjiuno/msgreader");
-      const reader = new MsgReader(new Uint8Array(buffer));
-      const data = reader.getFileData() as {
-        subject?: string;
-        senderName?: string;
-        body?: string;
-      };
+      const mod = await import("@kenjiuno/msgreader");
+      const MsgReader = (mod as { MsgReader?: unknown }).MsgReader ?? mod.default;
+      type MsgReaderInstance = { getFileData(): { subject?: string; senderName?: string; body?: string } };
+      const reader = new (MsgReader as new (data: Uint8Array) => MsgReaderInstance)(new Uint8Array(buffer));
+      const data = reader.getFileData();
       parsed = {
         subject: data.subject ?? "",
         from: data.senderName ?? "",

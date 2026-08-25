@@ -33,7 +33,7 @@ export function CorrectionForm({
   const [conflict, setConflict] = useState<CorrectionDto | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState<null | { requiresApproval: boolean }>(null);
 
   async function submit(resolve?: "replace" | "annotate") {
     if (corrected.trim().length < 2) return;
@@ -51,8 +51,8 @@ export function CorrectionForm({
       if (res.conflict === true) {
         setConflict(res.existing);
       } else {
-        setSaved(true);
-        setTimeout(() => onSuccess?.(), 1400);
+        setSaved({ requiresApproval: Boolean(res.requires_approval) });
+        setTimeout(() => onSuccess?.(), saved?.requiresApproval ? 2600 : 1400);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save correction");
@@ -66,8 +66,17 @@ export function CorrectionForm({
       <div className="flex items-center gap-2.5 rounded-2xl border border-accent-line bg-accent-soft p-4">
         <CheckCircle size={18} weight="fill" className="shrink-0 text-accent" />
         <p className="text-[13px] leading-relaxed">
-          <span className="font-medium">Correction saved.</span> Matching future questions will now get this answer,
-          labeled as a correction.
+          {saved.requiresApproval ? (
+            <>
+              <span className="font-medium">Submitted for approval.</span> This workspace requires review — an Approver will
+              see it in the queue, and it goes live for everyone the moment it&apos;s approved.
+            </>
+          ) : (
+            <>
+              <span className="font-medium">Correction saved.</span> Matching future questions will now get this answer,
+              labeled as a correction.
+            </>
+          )}
         </p>
       </div>
     );

@@ -372,7 +372,7 @@ export function insertWorkspace(input: NewWorkspaceInput): WorkspaceRow {
 
 export function updateWorkspaceSettings(
   id: string,
-  patch: Partial<Pick<WorkspaceRow, "name" | "approval_required" | "confidence_threshold" | "plan_tier">>
+  patch: Partial<Pick<WorkspaceRow, "name" | "confidence_threshold" | "plan_tier">> & { approval_required?: boolean }
 ) {
   const sets: string[] = [];
   const params: Record<string, unknown> = { id };
@@ -444,8 +444,12 @@ export function countMembers(workspaceId: string): number {
 
 /* ------------------------- Documents ------------------------- */
 
-export type NewDocumentInput = Omit<DocumentRow, "created_at" | "ocr_warning"> & {
+export type NewDocumentInput = Omit<DocumentRow, "created_at" | "ocr_warning" | "source_type" | "source_connection_id" | "current_version_id" | "version_number"> & {
   ocr_warning?: boolean | number;
+  source_type?: DocumentSourceType;
+  source_connection_id?: string | null;
+  current_version_id?: string | null;
+  version_number?: number;
 };
 
 export function insertDocument(doc: NewDocumentInput) {

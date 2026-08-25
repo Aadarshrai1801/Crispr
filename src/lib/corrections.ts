@@ -196,7 +196,7 @@ export async function approveCorrection(id: string, approverId: string, opts?: {
     audit.write(correction.workspace_id, approverId, "correction.superseded", "correction", conflictingActive.id, { status: "active" }, { status: "superseded", superseded_by: id });
   }
 
-  setCorrectionStatus(id, "active", supersededId, { approved_by: approverId });
+  setCorrectionStatus(id, "active", supersededId ?? undefined, { approved_by: approverId });
   const updated = getCorrection(id)!;
   await syncIndexRow(updated); // enters the override layer for ALL workspace members instantly (FR-32)
 

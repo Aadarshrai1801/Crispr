@@ -5,10 +5,15 @@ import {
   findSimilarPendingSuggestion,
   getCorrection,
   getQueryLog,
+  getSuggestedCorrection,
   hasActiveCorrectionForQuestions,
   insertSuggestedCorrection,
   listFlaggedLogsSince,
+  setSuggestedCorrectionStatus,
 } from "./db";
+import { searchChunksWorkspace } from "./vector";
+import { createCorrectionFromSuggestion } from "./corrections";
+import { audit as auditLog } from "./audit";
 
 /**
  * Pillar E — compounding intelligence.
@@ -182,7 +187,6 @@ export async function acceptSuggestion(
   actorId: string,
   overrides?: { corrected_answer?: string; document_id?: string | null }
 ) {
-  const { getSuggestedCorrection } = await import("./db");
   const suggestion = getSuggestedCorrection(suggestionId);
   if (!suggestion) throw new Error("Suggestion not found");
   if (suggestion.status !== "pending") throw new Error(`Suggestion already ${suggestion.status}`);
@@ -231,12 +235,10 @@ export async function acceptSuggestion(
 }
 
 export async function dismissSuggestion(suggestionId: string, actorId: string) {
-  const { getSuggestedCorrection, setSuggestedCorrectionStatus: setStatus } = await import("./db");
-  const { audit } = await import("./audit");
   const suggestion = getSuggestedCorrection(suggestionId);
   if (!suggestion) throw new Error("Suggestion not found");
-  setStatus(suggestionId, "dismissed");
-  audit.write(suggestion.workspace_id, actorId, "suggestion.dismissed", "suggested_correction", suggestionId, { status: "pending" }, { status: "dismissed" });
+  setSuggestedCorrectionStatus(suggestionId, "dismissed");
+  auditLog.write(suggestion.workspace_id, actorId, "suggestion.dismissed", "suggested_correction", suggestionId, { status: "pending" }, { status: "dismissed" });
 }
 
 type SuggestedPattern =
