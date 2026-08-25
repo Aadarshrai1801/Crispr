@@ -27,7 +27,7 @@ import type {
   WorkspaceRole,
   WorkspaceRow,
 } from "./types";
-import { sqlitePath } from "./config";
+import { sqlitePath, validateProductionEnv } from "./config";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -174,6 +174,7 @@ function migrate(db: Database.Database) {
 /* ------------------------- setup ------------------------- */
 
 function createDb(): Database.Database {
+  validateProductionEnv();
   mkdirSync(require_path_dirname(sqlitePath()), { recursive: true });
   const db = new Database(sqlitePath());
   db.pragma("journal_mode = WAL");

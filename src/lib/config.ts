@@ -1,5 +1,40 @@
 import path from "node:path";
 
+/**
+ * Known insecure fallback used only in local development. Production boot fails
+ * fast if the real secret is unset or still matches this value.
+ */
+export const DEV_ENCRYPTION_FALLBACK = "crispr-local-dev-encryption-secret";
+
+/** True when running the actual production server (not `next build`). */
+export function isProdRuntime(): boolean {
+  return (
+    process.env.NODE_ENV === "production" &&
+    process.env.NEXT_PHASE !== "phase-production-build"
+  );
+}
+
+/**
+ * Blocker #5: refuse to boot the production server with insecure defaults.
+ * Called from createDb() (i.e. on first runtime DB access) and by /api/ready,
+ * and skipped during the build phase where NODE_ENV is already "production".
+ */
+export function validateProductionEnv(): void {
+  if (!isProdRuntime()) return;
+  const failures: string[] = [];
+  const secret = process.env.CRISPR_ENCRYPTION_SECRET;
+  if (!secret || secret === DEV_ENCRYPTION_FALLBACK) {
+    failures.push(
+      "CRISPR_ENCRYPTION_SECRET is unset or still set to the development fallback. Generate one with: node -e \"console.log(require('node:crypto').randomBytes(32).toString('base64url'))\""
+    );
+  }
+  if (failures.length) {
+    throw new Error(
+      `Refusing to start in production mode:\n  - ${failures.join("\n  - ")}`
+    );
+  }
+}
+
 function numEnv(key: string, fallback: number): number {
   const raw = process.env[key];
   if (!raw) return fallback;
@@ -49,7 +84,8 @@ export const config = {
   repeatedFlagClusterSimilarity: numEnv("REPEATED_FLAG_CLUSTER_SIMILARITY", 0.82),
   webhookTimeoutMs: numEnv("WEBHOOK_TIMEOUT_MS", 5000),
   // Secret used to encrypt integration credentials at rest (AES-256-GCM). Set in production!
-  encryptionSecret: process.env.CRISPR_ENCRYPTION_SECRET ?? "crispr-local-dev-encryption-secret",
+  // Dev fallback only — validateProductionEnv() hard-fails a production boot that relies on it.
+  encryptionSecret: process.env.CRISPR_ENCRYPTION_SECRET ?? DEV_ENCRYPTION_FALLBACK,
   // Slack/Teams bot wiring (optional; used by /api/integrations/slack/events).
   slackSigningSecret: process.env.SLACK_SIGNING_SECRET ?? "",
   slackDefaultWorkspaceId: process.env.SLACK_DEFAULT_WORKSPACE_ID ?? "",
