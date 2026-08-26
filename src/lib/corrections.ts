@@ -26,6 +26,8 @@ export interface SubmitCorrectionInput {
   resolve?: "replace" | "annotate" | "keep";
   /** Acting user (defaults to the query log's user). */
   actor_id?: string;
+  /** Role of the acting user — Admin/Approver submissions skip the approval gate. */
+  submitter_role?: WorkspaceRole | null;
   /** When accepting a system-generated suggestion (FR-51). */
   suggested_correction_id?: string | null;
 }
@@ -87,7 +89,9 @@ export async function submitCorrection(input: SubmitCorrectionInput): Promise<Su
 
   const actorId = input.actor_id ?? log.user_id;
   const workspace = getWorkspace(log.workspace_id);
-  const approvalRequired = Boolean(workspace?.approval_required);
+  // FR-33 with role-aware gate: when approval mode is on, Admin/Approver fixes go
+  // live immediately (trusted reviewers); everyone else needs an approval.
+  const approvalRequired = Boolean(workspace?.approval_required) && !canApprove(input.submitter_role);
 
   const documentIds = JSON.parse(log.document_ids) as string[];
   const scope = input.scope ?? (documentIds.length === 1 ? "document" : "workspace");
@@ -311,9 +315,11 @@ export async function createCorrectionFromSuggestion(input: {
   topic_tags?: string[];
   submitted_by: string;
   suggested_correction_id: string;
+  submitter_role?: WorkspaceRole | null;
 }): Promise<CorrectionRow> {
   const workspace = getWorkspace(input.workspace_id);
-  const status: CorrectionRow["status"] = workspace?.approval_required ? "pending" : "active";
+  const status: CorrectionRow["status"] =
+    workspace?.approval_required && !canApprove(input.submitter_role) ? "pending" : "active";
 
   const correction = insertCorrection({
     workspace_id: input.workspace_id,

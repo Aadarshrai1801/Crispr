@@ -65,6 +65,7 @@ export async function POST(request: Request) {
       topic_tags: body.topic_tags,
       resolve: body.resolve,
       actor_id: ctx.userId,
+      submitter_role: ctx.role,
     });
 
     if (result.conflictWith && !body.resolve) {

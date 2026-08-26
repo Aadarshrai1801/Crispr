@@ -26,14 +26,24 @@ function getEmbedder(): Promise<FeatureExtractionPipeline> {
   return globalThis.__crispEmbedder;
 }
 
+/** Max sequences per ONNX run — keeps attention buffers bounded for large docs. */
+const EMBED_BATCH_SIZE = 32;
+
 /** Embed a batch of texts into normalized unit vectors. */
 export async function embed(texts: string[]): Promise<number[][]> {
   if (!texts.length) return [];
   const extractor = await getEmbedder();
-  const output = await extractor(texts, { pooling: "mean", normalize: true });
-  const list = output.tolist() as number[][];
-  if (list[0]) setEmbedDim(list[0].length);
-  return list;
+  const out: number[][] = [];
+  for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+    const output = await extractor(texts.slice(i, i + EMBED_BATCH_SIZE), {
+      pooling: "mean",
+      normalize: true,
+    });
+    const list = output.tolist() as number[][];
+    out.push(...list);
+    if (out[0]) setEmbedDim(out[0].length);
+  }
+  return out;
 }
 
 export async function embedOne(text: string): Promise<number[]> {

@@ -33,6 +33,7 @@ export async function POST(request: Request, { params }: Params) {
     const correction = await acceptSuggestion(id, ctx.userId, {
       corrected_answer: body.corrected_answer,
       document_id: body.document_id ?? undefined,
+      submitterRole: ctx.role,
     });
     return json({ correction }, 201);
   } catch (err) {

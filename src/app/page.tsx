@@ -303,7 +303,7 @@ export default function ChatPage() {
                   </h1>
                   <p className="mt-3 max-w-[52ch] text-sm leading-relaxed text-ink-soft">
                     Ask a question about your selected documents. Every answer cites its pages — flag anything wrong and
-                    Crisp retries with a different strategy, or saves your fix permanently.
+                    Crispr retries with a different strategy, or saves your fix permanently.
                   </p>
 
                   {readyDocs.length === 0 && docs !== null ? (

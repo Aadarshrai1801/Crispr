@@ -80,7 +80,7 @@ export default function LoginPage() {
           <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent text-on-accent">
             <Sparkle size={16} weight="fill" />
           </span>
-          <span className="text-lg font-semibold tracking-tight">Crisp</span>
+          <span className="text-lg font-semibold tracking-tight">Crispr</span>
         </div>
 
         <form onSubmit={submit} className="space-y-3 rounded-xl border border-line bg-surface p-5 shadow-[var(--shadow-card)]">

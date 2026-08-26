@@ -5,7 +5,7 @@ import "./globals.css";
 import { AppShell } from "@/components/app-shell";
 
 export const metadata: Metadata = {
-  title: "Crisp — Self-correcting document Q&A",
+  title: "Crispr",
   description: "Upload PDFs, ask questions, get cited answers that improve every time you correct them.",
 };
 

@@ -93,7 +93,7 @@ export async function POST(request: Request) {
   } catch (err) {
     logger.error({ err }, "[slack.events]");
     return NextResponse.json(
-      { response_type: "ephemeral", text: "Crisp could not answer right now. Try again shortly." },
+      { response_type: "ephemeral", text: "Crispr could not answer right now. Try again shortly." },
       { status: 200 }
     );
   }

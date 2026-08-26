@@ -101,7 +101,9 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open http://localhost:3000. The database, vector index, models cache, and uploads all self-initialize under `./data`.
+Open http://localhost:3000 and sign in — local dev accounts use the password `demo1234`
+(`local@crispai.app` plus the demo teammates below; the "act as" switcher works locally only).
+The database, vector index, models cache, and uploads all self-initialize under `./data`.
 
 First-run seeding creates:
 
@@ -118,6 +120,14 @@ First-run seeding creates:
 ```bash
 npm run build
 npm start
+```
+
+For Docker/on-prem deployment, provisioning, backups, and rollback see
+[`docs/deploy.md`](docs/deploy.md). Production requires `CRISPR_ENCRYPTION_SECRET`
+(the server refuses to boot without it) and real user accounts via:
+
+```bash
+node scripts/create-user.mjs "Dana Admin" dana@company.com 'passphrase' --admin
 ```
 
 ## Using Crispr
@@ -166,7 +176,9 @@ Tiers are set per workspace (Settings tab) and enforced by the API where meaning
 
 ## API
 
-All endpoints accept `x-crisp-user-id` / `x-crisp-workspace-id` headers identifying the acting user and workspace (authorization itself is resolved server-side).
+All endpoints authenticate via the signed-in session cookie (HttpOnly) or an Enterprise API key
+for `/api/public/*`. The acting user is resolved server-side — client-supplied identity headers
+are never trusted.
 
 ### Core (used by the web app)
 
@@ -236,7 +248,8 @@ Verify with the same HMAC construction using the signing secret shown once at cr
 ## Slack bot
 
 1. In Slack, create a slash command (e.g. `/crisp`) pointing at `POST {your-app}/api/integrations/slack/events`.
-2. Set `SLACK_DEFAULT_WORKSPACE_ID` (and optionally `SLACK_SIGNING_SECRET`) in `.env.local`.
+2. Set `SLACK_DEFAULT_WORKSPACE_ID` **and** `SLACK_SIGNING_SECRET` in `.env.local` — requests
+   without a valid Slack signature are rejected with 401.
 3. `/crisp What is the refund window?` → answered in-channel with citations; low-confidence answers carry a ⚠️ caveat.
 
 ## Browser extension
@@ -311,9 +324,11 @@ See [`.env.example`](.env.example) for the full annotated list. Highlights:
 
 ```bash
 npm run dev         # dev server (turbopack)
-npm run build       # production build
+npm run build       # production build (always from a clean .next)
 npm start           # serve production build
 npm run typecheck   # strict TypeScript check
+npm run lint        # ESLint (next/core-web-vitals)
+npm test            # Vitest suite (RBAC, approvals, precedence, signing, SSRF...)
 ```
 
 Useful things to know while hacking:

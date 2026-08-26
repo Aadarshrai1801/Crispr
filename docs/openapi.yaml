@@ -1,0 +1,147 @@
+openapi: "3.0.3"
+info:
+  title: Crispr Public REST API
+  version: "2.0"
+  description: |
+    Enterprise-tier API for embedding Crispr's self-correcting document Q&A into third-party
+    products. Authenticate with `Authorization: Bearer cris_...` keys created in
+    Workspace → API keys. Keys are workspace-scoped with explicit scopes.
+
+    Answers include a confidence object; when `confidence.flagged_needs_review` is true the
+    response is marked `authoritative: false` and must NOT be treated as authoritative downstream.
+servers:
+  - url: "{baseUrl}"
+    variables:
+      baseUrl:
+        default: http://localhost:3000
+security:
+  - BearerKey: []
+
+paths:
+  /api/public/query:
+    post:
+      summary: Ask a question across documents
+      operationId: publicQuery
+      x-scope: query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+                  minLength: 3
+                  maxLength: 2000
+                document_ids:
+                  type: array
+                  items: { type: string }
+                workspace_wide:
+                  type: boolean
+                  description: Query every ready document in the key's workspace.
+      responses:
+        "200":
+          description: Answer with citations + confidence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueryResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: No ready documents in this workspace. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/public/documents:
+    post:
+      summary: Upload a document (multipart)
+      operationId: publicUpload
+      x-scope: write
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PDF, DOCX, XLSX, EML or MSG up to 200 MB.
+      responses:
+        "202": { $ref: "#/components/schemas/Document" }
+        "409": { description: Identical file already ingested (`already_ingested: true`). }
+        "413": { description: File exceeds 200 MB. }
+        "415": { description: Unsupported format. }
+
+  /api/public/corrections:
+    post:
+      summary: Submit a correction
+      operationId: publicCorrection
+      x-scope: write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query_log_id, corrected_answer]
+              properties:
+                query_log_id: { type: string }
+                corrected_answer: { type: string, maxLength: 8000 }
+                note: { type: string, nullable: true }
+                scope: { type: string, enum: [document, workspace] }
+      responses:
+        "201": { $ref: "#/components/schemas/QueryResult" }
+        "200": { description: Conflict — an active near-duplicate correction exists. }
+
+components:
+  securitySchemes:
+    BearerKey:
+      type: http
+      scheme: bearer
+      bearerFormat: cris_<base64url>
+  responses:
+    Unauthorized:
+      description: Missing/invalid key or wrong scope.
+    Forbidden:
+      description: Key lacks the required scope.
+    RateLimited:
+      description: Per-key rate limit exceeded; honor Retry-After (seconds).
+
+  schemas:
+    Confidence:
+      type: object
+      properties:
+        score: { type: number }
+        threshold: { type: number }
+        flagged_needs_review: { type: boolean }
+    Citation:
+      type: object
+      properties:
+        document_id: { type: string }
+        document_name: { type: string }
+        page: { type: integer }
+        section_label: { type: string, nullable: true }
+        chunk_id: { type: string }
+    QueryResult:
+      type: object
+      properties:
+        query_log_id: { type: string }
+        question: { type: string }
+        answer: { type: string }
+        source_type: { type: string, enum: [document, correction, no_answer] }
+        citations:
+          type: array
+          items: { $ref: "#/components/schemas/Citation" }
+        confidence: { $ref: "#/components/schemas/Confidence" }
+        authoritative: { type: boolean }
+        narrowed_search: { type: boolean }
+    Document:
+      type: object
+      properties:
+        id: { type: string }
+        filename: { type: string }
+        status: { type: string, enum: [processing, ready, failed] }
+        page_count: { type: integer }

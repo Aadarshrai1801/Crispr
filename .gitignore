@@ -23,3 +23,5 @@ public/pdf.worker.min.mjs
 npm-debug.log*
 .vercel
 *.tsbuildinfo
+server.log
+backups/

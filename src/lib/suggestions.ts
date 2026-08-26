@@ -15,6 +15,7 @@ import { searchChunksWorkspace } from "./vector";
 import { createCorrectionFromSuggestion } from "./corrections";
 import { audit as auditLog } from "./audit";
 import { logger } from "./logger";
+import type { WorkspaceRole } from "./types";
 
 /**
  * Pillar E — compounding intelligence.
@@ -186,7 +187,7 @@ export async function generateRepeatedFlagSuggestions(workspaceId: string): Prom
 export async function acceptSuggestion(
   suggestionId: string,
   actorId: string,
-  overrides?: { corrected_answer?: string; document_id?: string | null }
+  overrides?: { corrected_answer?: string; document_id?: string | null; submitterRole?: WorkspaceRole | null }
 ) {
   const suggestion = getSuggestedCorrection(suggestionId);
   if (!suggestion) throw new Error("Suggestion not found");
@@ -229,6 +230,7 @@ export async function acceptSuggestion(
     note: "Created from a compounding-intelligence suggestion",
     submitted_by: actorId,
     suggested_correction_id: suggestion.id,
+    submitter_role: actorRole ?? null,
   });
 
   setSuggestedCorrectionStatus(suggestion.id, "accepted");

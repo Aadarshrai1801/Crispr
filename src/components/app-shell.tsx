@@ -45,7 +45,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="grid h-7 w-7 place-items-center rounded-lg bg-accent text-on-accent">
             <Sparkle size={14} weight="fill" />
           </span>
-          <span className="text-[15px] font-semibold tracking-tight">Crisp</span>
+          <span className="text-[15px] font-semibold tracking-tight">Crispr</span>
           <span className="mt-px rounded-md border border-accent-line bg-accent-soft px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-accent-strong">
             v2
           </span>
@@ -176,7 +176,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="grid h-6 w-6 place-items-center rounded-md bg-accent text-on-accent">
             <Sparkle size={12} weight="fill" />
           </span>
-          <span className="text-sm font-semibold tracking-tight">Crisp</span>
+          <span className="text-sm font-semibold tracking-tight">Crispr</span>
         </Link>
         <nav className="flex items-center gap-1">
           {[...NAV, { href: "/workspace", label: "Workspace", icon: UsersThree }].map(({ href, label, icon: Icon }) => {

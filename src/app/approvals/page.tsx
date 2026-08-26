@@ -417,7 +417,7 @@ function ConflictsTab({ conflicts, onChanged }: { conflicts: ConflictAlertDto[];
       <EmptyState
         icon={<CheckCircle size={20} weight="light" />}
         title="No open conflicts"
-        body="Crisp scans workspace documents after every ingestion for passages that contradict each other (FR-43). Run a scan manually above."
+        body="Crispr scans workspace documents after every ingestion for passages that contradict each other (FR-43). Run a scan manually above."
       />
     );
   }
