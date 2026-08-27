@@ -336,46 +336,41 @@ async function migrateVectors() {
   const chunks = await chunksTable.query().limit(100000).toArray();
   console.log(`  LanceDB chunks raw count: ${chunks.length}`);
   if (chunks.length) {
-    const batchSize = 500;
+    const batchSize = 200;
     let migratedChunks = 0;
-    for (let i = 0; i < chunks.length; i += batchSize) {
-      const batch = chunks.slice(i, i + batchSize);
-      const client = await (await pgPool.connect());
-      try {
-        await client.query("BEGIN");
+    const client = await (await pgPool.connect());
+    try {
+      await client.query("BEGIN");
+      for (let i = 0; i < chunks.length; i += batchSize) {
+        const batch = chunks.slice(i, i + batchSize);
+        const values = [];
+        const params = [];
         for (const c of batch) {
           const vec = toPlainArray(c.vector);
           if (!vec.length) continue;
           const vecStr = `[${vec.map((v) => Number(v).toFixed(6)).join(",")}]`;
-          await client.query(
-            `INSERT INTO chunks (id, document_id, workspace_id, page_number, section_label, text, embedding)
-             VALUES ($1,$2,$3,$4,$5,$6,$7::vector)
-             ON CONFLICT (id) DO UPDATE SET
-               document_id = EXCLUDED.document_id,
-               workspace_id = EXCLUDED.workspace_id,
-               page_number = EXCLUDED.page_number,
-               section_label = EXCLUDED.section_label,
-               text = EXCLUDED.text,
-               embedding = EXCLUDED.embedding`,
-            [
-              c.id,
-              c.document_id,
-              c.workspace_id,
-              c.page_number ?? 0,
-              sanitizeText(c.section_label ?? ""),
-              sanitizeText(c.text ?? ""),
-              vecStr,
-            ]
+          values.push(`($${params.length + 1},$${params.length + 2},$${params.length + 3},$${params.length + 4},$${params.length + 5},$${params.length + 6},$${params.length + 7}::vector)`);
+          params.push(
+            c.id,
+            c.document_id,
+            c.workspace_id,
+            c.page_number ?? 0,
+            sanitizeText(c.section_label ?? ""),
+            sanitizeText(c.text ?? ""),
+            vecStr,
           );
-          migratedChunks++;
         }
-        await client.query("COMMIT");
-      } catch (e) {
-        try { await client.query("ROLLBACK"); } catch {}
-        throw e;
-      } finally {
-        client.release();
+        if (!values.length) continue;
+        const sql = `INSERT INTO chunks (id, document_id, workspace_id, page_number, section_label, text, embedding) VALUES ${values.join(",")} ON CONFLICT (id) DO UPDATE SET document_id = EXCLUDED.document_id, workspace_id = EXCLUDED.workspace_id, page_number = EXCLUDED.page_number, section_label = EXCLUDED.section_label, text = EXCLUDED.text, embedding = EXCLUDED.embedding`;
+        await client.query(sql, params);
+        migratedChunks += values.length;
       }
+      await client.query("COMMIT");
+    } catch (e) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw e;
+    } finally {
+      client.release();
     }
     console.log(`  chunks: ${migratedChunks} rows`);
   }
@@ -385,31 +380,32 @@ async function migrateVectors() {
   const corrVectors = await corrTable.query().limit(100000).toArray();
   console.log(`  LanceDB corrections_index raw count: ${corrVectors.length}`);
   if (corrVectors.length) {
+    const batchSize = 200;
+    let migratedCorr = 0;
     const client = await (await pgPool.connect());
     try {
       await client.query("BEGIN");
-      let migratedCorr = 0;
-      for (const c of corrVectors) {
-        const vec = toPlainArray(c.vector);
-        if (!vec.length) continue;
-        const vecStr = `[${vec.map((v) => Number(v).toFixed(6)).join(",")}]`;
-        await client.query(
-          `INSERT INTO corrections_index (id, workspace_id, document_id, scope, embedding)
-           VALUES ($1,$2,$3,$4,$5::vector)
-           ON CONFLICT (id) DO UPDATE SET
-             workspace_id = EXCLUDED.workspace_id,
-             document_id = EXCLUDED.document_id,
-             scope = EXCLUDED.scope,
-             embedding = EXCLUDED.embedding`,
-          [
+      for (let i = 0; i < corrVectors.length; i += batchSize) {
+        const batch = corrVectors.slice(i, i + batchSize);
+        const values = [];
+        const params = [];
+        for (const c of batch) {
+          const vec = toPlainArray(c.vector);
+          if (!vec.length) continue;
+          const vecStr = `[${vec.map((v) => Number(v).toFixed(6)).join(",")}]`;
+          values.push(`($${params.length + 1},$${params.length + 2},$${params.length + 3},$${params.length + 4},$${params.length + 5}::vector)`);
+          params.push(
             c.id,
             c.workspace_id,
             c.document_id ?? "",
             c.scope ?? "document",
             vecStr,
-          ]
-        );
-        migratedCorr++;
+          );
+        }
+        if (!values.length) continue;
+        const sql = `INSERT INTO corrections_index (id, workspace_id, document_id, scope, embedding) VALUES ${values.join(",")} ON CONFLICT (id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, document_id = EXCLUDED.document_id, scope = EXCLUDED.scope, embedding = EXCLUDED.embedding`;
+        await client.query(sql, params);
+        migratedCorr += values.length;
       }
       await client.query("COMMIT");
       console.log(`  corrections_index: ${migratedCorr} rows`);

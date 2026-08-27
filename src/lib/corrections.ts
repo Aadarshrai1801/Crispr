@@ -92,7 +92,6 @@ export async function submitCorrection(input: SubmitCorrectionInput): Promise<Su
 
   const actorId = input.actor_id ?? log.user_id;
   const workspace = await getWorkspace(log.workspace_id);
-  void workspace;
 
   const documentIds = JSON.parse(log.document_ids) as string[];
   const scope = input.scope ?? (documentIds.length === 1 ? "document" : "workspace");
@@ -117,7 +116,11 @@ export async function submitCorrection(input: SubmitCorrectionInput): Promise<Su
     }
   }
 
-  const status: CorrectionRow["status"] = canApprove(input.submitter_role) ? "active" : "pending";
+  const status: CorrectionRow["status"] = workspace?.approval_required
+    ? canApprove(input.submitter_role)
+      ? "active"
+      : "pending"
+    : "active";
 
   const correction = await insertCorrection({
     workspace_id: log.workspace_id,
