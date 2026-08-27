@@ -1,6 +1,5 @@
-import { getDb, getWorkspace, listDocuments } from "./db";
+import { getWorkspace, listDocuments, listFlaggedLogsSince, rawQuery, rawQueryOne } from "./db";
 import { clusterFlaggedQuestions } from "./suggestions";
-import { listFlaggedLogsSince } from "./db";
 import { config } from "./config";
 
 /**
@@ -52,49 +51,45 @@ export interface WorkspaceAnalytics {
 const FLAG_LOOKBACK_DAYS = 180;
 
 export async function computeWorkspaceAnalytics(workspaceId: string): Promise<WorkspaceAnalytics> {
-  const ws = getWorkspace(workspaceId);
-  const db = getDb();
+  const ws = await getWorkspace(workspaceId);
 
-  const docs = listDocuments(workspaceId);
+  const docs = await listDocuments(workspaceId);
   const docNames = new Map(docs.map((d) => [d.id, d.filename]));
 
-  const counts = db
-    .prepare(
-      `SELECT
-        COUNT(*) AS queries,
-        SUM(CASE WHEN feedback_status = 'flagged' THEN 1 ELSE 0 END) AS flagged,
-        SUM(CASE WHEN source_type = 'correction' THEN 1 ELSE 0 END) AS served_from_correction
-       FROM query_logs WHERE workspace_id = ?`
-    )
-    .get(workspaceId) as { queries: number; flagged: number; served_from_correction: number };
+  const counts = (await rawQueryOne(
+    `SELECT
+      COUNT(*) AS queries,
+      SUM(CASE WHEN feedback_status = 'flagged' THEN 1 ELSE 0 END) AS flagged,
+      SUM(CASE WHEN source_type = 'correction' THEN 1 ELSE 0 END) AS served_from_correction
+     FROM query_logs WHERE workspace_id = ?`,
+    [workspaceId]
+  )) as { queries: number; flagged: number; served_from_correction: number };
 
-  const correctionCounts = db
-    .prepare(
-      `SELECT
-        COUNT(*) AS submitted,
-        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
-        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
-        SUM(CASE WHEN status IN ('retired','superseded') THEN 1 ELSE 0 END) AS retired,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS live
-       FROM corrections WHERE workspace_id = ?`
-    )
-    .get(workspaceId) as {
-      submitted: number;
-      pending: number;
-      active: number;
-      rejected: number;
-      retired: number;
-      live: number;
-    };
+  const correctionCounts = (await rawQueryOne(
+    `SELECT
+      COUNT(*) AS submitted,
+      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+      SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+      SUM(CASE WHEN status IN ('retired','superseded') THEN 1 ELSE 0 END) AS retired,
+      SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS live
+     FROM corrections WHERE workspace_id = ?`,
+    [workspaceId]
+  )) as {
+    submitted: number;
+    pending: number;
+    active: number;
+    rejected: number;
+    retired: number;
+    live: number;
+  };
 
   // Approvals carry approved_at; time-to-approval trend bucketed by approval week.
-  const approvedRows = db
-    .prepare(
-      `SELECT created_at, approved_at FROM corrections
-       WHERE workspace_id = ? AND status = 'active' AND approved_at IS NOT NULL`
-    )
-    .all(workspaceId) as Array<{ created_at: string; approved_at: string }>;
+  const approvedRows = await rawQuery<{ created_at: string; approved_at: string }>(
+    `SELECT created_at, approved_at FROM corrections
+     WHERE workspace_id = ? AND status = 'active' AND approved_at IS NOT NULL`,
+    [workspaceId]
+  );
 
   let avgHours: number | null = null;
   const weekly = new Map<string, { totalHours: number; n: number }>();
@@ -119,7 +114,7 @@ export async function computeWorkspaceAnalytics(workspaceId: string): Promise<Wo
 
   // Most-flagged documents over the lookback window.
   const since = new Date(Date.now() - FLAG_LOOKBACK_DAYS * 24 * 3600 * 1000).toISOString().replace("T", " ").slice(0, 19);
-  const flaggedLogs = listFlaggedLogsSince(workspaceId, since);
+  const flaggedLogs = await listFlaggedLogsSince(workspaceId, since);
   const perDoc = new Map<string, number>();
   for (const log of flaggedLogs) {
     try {
@@ -153,8 +148,11 @@ export async function computeWorkspaceAnalytics(workspaceId: string): Promise<Wo
     .slice(0, 8);
 
   const openConflicts = (
-    db.prepare("SELECT COUNT(*) AS n FROM conflict_alerts WHERE workspace_id = ? AND status = 'open'").get(workspaceId) as { n: number }
-  ).n;
+    (await rawQueryOne<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM conflict_alerts WHERE workspace_id = ? AND status = 'open'",
+      [workspaceId]
+    ))?.n ?? 0
+  );
 
   const decided = correctionCounts.active + correctionCounts.rejected;
 

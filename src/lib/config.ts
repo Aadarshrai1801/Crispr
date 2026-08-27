@@ -110,3 +110,38 @@ export const uploadsDir = () => path.join(config.dataDir, "uploads");
 export const lanceDbDir = () => path.join(config.dataDir, "lancedb");
 export const sqlitePath = () => path.join(config.dataDir, "crisp.db");
 export const modelsCacheDir = () => path.join(config.dataDir, "models");
+
+/**
+ * Storage backend selection. `supabase` uses a remote PostgreSQL (+pgvector)
+ * database and Supabase Storage for files. `local` keeps everything on disk
+ * (SQLite + LanceDB + filesystem) and is used for development and tests.
+ *
+ * The backend is picked automatically when the required Supabase env vars are
+ * present, else falls back to `local`. `CRISPR_BACKEND=local` forces local even
+ * when Supabase vars exist.
+ */
+export function storageBackend(): "supabase" | "local" {
+  if (process.env.CRISPR_BACKEND === "local") return "local";
+  if (
+    process.env.SUPABASE_URL &&
+    (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY) &&
+    process.env.DATABASE_URL
+  ) {
+    return "supabase";
+  }
+  return "local";
+}
+
+/** Supabase base URL (https://<project-ref>.supabase.co). */
+export const supabaseUrl = () => process.env.SUPABASE_URL ?? "";
+/** Database connection string for the pg driver (Supabase "Connection string"). */
+export const databaseUrl = () => process.env.DATABASE_URL ?? "";
+/** Service-role key grants full, RLS-bypassing access from the server (server-only). */
+export const supabaseServiceKey = () => process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? "";
+/** Storage bucket that holds uploaded files and version archives. */
+export const fileBucket = () => process.env.SUPABASE_STORAGE_BUCKET ?? "documents";
+/** Embedding dimension, used to size the pgvector columns at migration time. */
+export const embedDim = () => {
+  const n = Number(process.env.EMBED_DIM ?? 384);
+  return Number.isFinite(n) && n > 0 ? n : 384;
+};

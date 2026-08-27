@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import * as lancedb from "@lancedb/lancedb";
-import { getDb } from "@/lib/db";
+import { getDb, rawQueryOne } from "@/lib/db";
 import { lanceDbDir, validateProductionEnv } from "@/lib/config";
 
 export const runtime = "nodejs";
@@ -27,12 +27,12 @@ export async function GET() {
   }
 
   try {
-    const db = getDb();
-    db.prepare("SELECT 1").get();
-    const migrated = db
-      .prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='workspaces'")
-      .get() as { n: number };
-    if (!migrated.n) throw new Error("schema not initialized");
+    await getDb();
+    await rawQueryOne("SELECT 1");
+    const migrated = await rawQueryOne<{ n: number }>(
+      "SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='workspaces'"
+    );
+    if (!migrated?.n) throw new Error("schema not initialized");
     components.sqlite = { status: "ok" };
   } catch (err) {
     components.sqlite = { status: "fail", error: err instanceof Error ? err.message : String(err) };

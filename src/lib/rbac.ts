@@ -35,12 +35,12 @@ export class AuthzError extends Error {
  * The legacy x-crisp-user-id header is no longer trusted anywhere. Requests
  * without a valid session throw 401 before any workspace/role check runs.
  */
-export function requireAuthenticatedUser(request: Request): { id: string; name: string; email: string } {
+export async function requireAuthenticatedUser(request: Request): Promise<{ id: string; name: string; email: string }> {
   const token = parseCookies(request.headers.get("cookie") ?? "")[SESSION_COOKIE];
   if (!token) throw new AuthzError("Authentication required. Sign in to continue.", 401);
-  const session = getSession(token);
+  const session = await getSession(token);
   if (!session) throw new AuthzError("Session expired or invalid. Sign in again.", 401);
-  const user = getUser(session.user_id);
+  const user = await getUser(session.user_id);
   if (!user) throw new AuthzError("This account no longer exists.", 401);
   return user;
 }
@@ -50,24 +50,24 @@ export function devImpersonationEnabled(): boolean {
   return !isProdRuntime();
 }
 
-export function resolveUserId(request: Request): string {
-  return requireAuthenticatedUser(request).id;
+export async function resolveUserId(request: Request): Promise<string> {
+  return (await requireAuthenticatedUser(request)).id;
 }
 
 /**
  * Resolve requester + role within a workspace. Throws AuthzError when the user
  * has no membership. Viewer is the minimum role for any read access.
  */
-export function requireContext(request: Request, workspaceId: string): RequesterContext {
-  const userId = resolveUserId(request);
-  const ws = requireWorkspace(workspaceId);
-  const membership = getMembership(workspaceId, userId);
+export async function requireContext(request: Request, workspaceId: string): Promise<RequesterContext> {
+  const userId = await resolveUserId(request);
+  const ws = await requireWorkspace(workspaceId);
+  const membership = await getMembership(workspaceId, userId);
   if (!membership) throw new AuthzError("You do not have access to this workspace.", 403);
   return { userId, workspace: ws, role: membership.role };
 }
 
-export function requireWorkspace(workspaceId: string): WorkspaceRow {
-  const ws = getWorkspace(workspaceId);
+export async function requireWorkspace(workspaceId: string): Promise<WorkspaceRow> {
+  const ws = await getWorkspace(workspaceId);
   if (!ws) throw new AuthzError("Workspace not found.", 404);
   return ws;
 }
@@ -98,10 +98,10 @@ export function requireTier(workspace: WorkspaceRow, feature: keyof typeof tierF
   }
 }
 
-export function memberCount(workspaceId: string): number {
+export async function memberCount(workspaceId: string): Promise<number> {
   return countMembers(workspaceId);
 }
 
-export function listMemberDetails(workspaceId: string) {
+export async function listMemberDetails(workspaceId: string) {
   return listMembers(workspaceId);
 }

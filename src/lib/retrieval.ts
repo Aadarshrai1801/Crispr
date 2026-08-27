@@ -30,8 +30,8 @@ interface AnswerOptions {
 }
 
 /** FR-37 helper: all ready documents in a workspace (workspace-wide multi-doc queries). */
-export function readyDocumentIds(workspaceId: string): string[] {
-  return listDocuments(workspaceId)
+export async function readyDocumentIds(workspaceId: string): Promise<string[]> {
+  return (await listDocuments(workspaceId))
     .filter((d) => d.status === "ready")
     .map((d) => d.id);
 }
@@ -42,9 +42,9 @@ export interface ResolvedScope {
 }
 
 /** Applies the >50-document narrowing rule; prefers user-selected docs, then most recent. */
-export function resolveQueryScope(requestedIds: string[], workspaceId: string): ResolvedScope {
+export async function resolveQueryScope(requestedIds: string[], workspaceId: string): Promise<ResolvedScope> {
   if (requestedIds.length <= MULTI_DOC_SOFT_LIMIT) return { documentIds: requestedIds, narrowed: false };
-  const readySet = new Set(readyDocumentIds(workspaceId));
+  const readySet = new Set(await readyDocumentIds(workspaceId));
   const kept = requestedIds.filter((id) => readySet.has(id)).slice(0, MULTI_DOC_SOFT_LIMIT);
   return { documentIds: kept, narrowed: true };
 }
@@ -56,9 +56,9 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
 
   // ---- Cache identical fresh queries (cost control), never retries ----
   if (!isRetry) {
-    const cached = findCachedAnswer(workspaceId, normalizeQuestion(question), documentIds);
+    const cached = await findCachedAnswer(workspaceId, normalizeQuestion(question), documentIds);
     if (cached && Date.now() - new Date(cached.created_at).getTime() < 24 * 3600 * 1000) {
-      return payloadFromLog(cached);
+      return await payloadFromLog(cached);
     }
   }
 
@@ -68,11 +68,11 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
   const hits = await searchCorrections(questionVector, workspaceId, documentIds, config.correctionMatchThreshold);
   if (!isRetry && hits.length > 0) {
     const top = hits[0];
-    const correction = getCorrection(top.id);
+    const correction = await getCorrection(top.id);
     if (correction && correction.status === "active") {
-      incrementCorrectionStats(correction.id, "served_count");
+      await incrementCorrectionStats(correction.id, "served_count");
       const queryLogId = "ql_" + randomUUID();
-      insertQueryLog({
+      await insertQueryLog({
         id: queryLogId,
         workspace_id: workspaceId,
         user_id: userId,
@@ -121,7 +121,9 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
   const topK = isRetry ? config.retryTopK : config.retrievalTopK;
   const chunks = await searchChunks(questionVector, documentIds, topK);
 
-  const documents = documentIds.map((id) => getDocument(id)).filter((d): d is NonNullable<typeof d> => Boolean(d));
+  const documents = (
+    await Promise.all(documentIds.map((id) => getDocument(id)))
+  ).filter((d): d is NonNullable<typeof d> => Boolean(d));
   const namesById = new Map(documents.map((d) => [d.id, d.filename]));
 
   const queryLogId = "ql_" + randomUUID();
@@ -129,7 +131,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
   if (!chunks.length) {
     const message =
       "I could not find content in the uploaded document(s) that answers this question. Try rephrasing, or upload a document that covers this topic.";
-    insertQueryLog({
+    await insertQueryLog({
       id: queryLogId,
       workspace_id: workspaceId,
       user_id: userId,
@@ -216,7 +218,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
       });
   const confidence = buildConfidence(confidenceScore);
 
-  insertQueryLog({
+  await insertQueryLog({
     id: queryLogId,
     workspace_id: workspaceId,
     user_id: userId,
@@ -248,11 +250,11 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
   };
 }
 
-function payloadFromLog(log: QueryLogRow): QueryResultPayload {
+async function payloadFromLog(log: QueryLogRow): Promise<QueryResultPayload> {
   // Preserve correction provenance when re-serving a cached correction answer (FR-23)
   let correctionMeta: QueryResultPayload["correction"] = null;
   if (log.source_type === "correction" && log.correction_id) {
-    const c = getCorrection(log.correction_id);
+    const c = await getCorrection(log.correction_id);
     if (c && c.status === "active") {
       correctionMeta = {
         id: c.id,
@@ -285,7 +287,9 @@ function payloadFromLog(log: QueryLogRow): QueryResultPayload {
 export async function originalDocumentAnswer(workspaceId: string, documentIds: string[], question: string): Promise<QueryResultPayload> {
   const vector = await embedOne(question);
   const chunks = await searchChunks(vector, documentIds, config.retrievalTopK);
-  const documents = documentIds.map((id) => getDocument(id)).filter((d): d is NonNullable<typeof d> => Boolean(d));
+  const documents = (
+    await Promise.all(documentIds.map((id) => getDocument(id)))
+  ).filter((d): d is NonNullable<typeof d> => Boolean(d));
   const namesById = new Map(documents.map((d) => [d.id, d.filename]));
   void workspaceId;
 

@@ -21,9 +21,9 @@ export async function POST(request: Request, { params }: Params) {
     const body = BodySchema.parse(await request.json().catch(() => ({})));
     const correction = await (async () => {
       const { getCorrection } = await import("@/lib/db");
-      const existing = getCorrection(id);
+      const existing = await getCorrection(id);
       if (!existing) return null;
-      const ctx = requireContext(request, existing.workspace_id);
+      const ctx = await requireContext(request, existing.workspace_id);
       requireApprover(ctx);
       return approveCorrection(id, ctx.userId, { supersedeExisting: body.supersede_existing });
     })();

@@ -72,9 +72,9 @@ describe("role x minimum-role matrix", () => {
 });
 
 describe("requireWorkspace", () => {
-  it("throws 404 for unknown workspaces", () => {
+  it("throws 404 for unknown workspaces", async () => {
     try {
-      requireWorkspace("ws_does_not_exist");
+      await requireWorkspace("ws_does_not_exist");
       throw new Error("expected 404");
     } catch (err) {
       expect(err).toBeInstanceOf(AuthzError);

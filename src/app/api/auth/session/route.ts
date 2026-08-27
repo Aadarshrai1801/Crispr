@@ -8,14 +8,14 @@ export const dynamic = "force-dynamic";
 /** Who am I? Returns the session user's identity + workspaces + active role, or 401. */
 export async function GET(request: Request) {
   try {
-    const user = requireAuthenticatedUser(request);
-    const workspaces = listWorkspacesForUser(user.id);
+    const user = await requireAuthenticatedUser(request);
+    const workspaces = await listWorkspacesForUser(user.id);
     const workspaceId = workspaces[0]?.id ?? null;
     return json({
       user: { id: user.id, name: user.name, email: user.email },
       workspaces,
       workspaceId,
-      role: workspaceId ? getMembership(workspaceId, user.id)?.role ?? null : null,
+      role: workspaceId ? (await getMembership(workspaceId, user.id))?.role ?? null : null,
     });
   } catch (err) {
     return apiError(err);

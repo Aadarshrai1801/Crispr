@@ -14,13 +14,13 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const workspaceId = url.searchParams.get("workspace_id") ?? "ws_default";
-    const ctx = requireContext(request, workspaceId);
+    const ctx = await requireContext(request, workspaceId);
     requireApprover(ctx);
-    const edits = listCorrectionsWithPendingEdits(workspaceId).map((row) => ({
+    const edits = (await listCorrectionsWithPendingEdits(workspaceId)).map((row) => ({
       ...row,
       pending_edit: row.pending_edit ? (JSON.parse(row.pending_edit) as Record<string, unknown>) : null,
     }));
-    return json({ corrections: listPendingCorrections(workspaceId), edits });
+    return json({ corrections: await listPendingCorrections(workspaceId), edits });
   } catch (err) {
     return apiError(err);
   }

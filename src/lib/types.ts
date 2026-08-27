@@ -1,3 +1,34 @@
+export type ChatSessionStatus = "active" | "archived";
+
+export interface ChatSessionRow {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  title: string;
+  document_ids: string; // JSON string[]
+  status: ChatSessionStatus;
+  created_at: string;
+  updated_at: string;
+  last_message_at: string | null;
+}
+
+export type ChatMessageRole = "user" | "assistant";
+
+/**
+ * Durable, user-facing conversational message. `content` is a JSON blob whose
+ * shape depends on `role`: user messages store `{ question: string }`, assistant
+ * messages store `{ result: QueryResultDto }`. `query_log_id` links assistant
+ * messages to their internal QueryLog row (the retrieval system-of-record).
+ */
+export interface ChatMessageRow {
+  id: string;
+  session_id: string;
+  role: ChatMessageRole;
+  content: string; // JSON blob (see ChatSessionRow doc)
+  query_log_id: string | null;
+  created_at: string;
+}
+
 export type DocumentStatus = "processing" | "ready" | "failed";
 export type FeedbackStatus = "none" | "flagged" | "confirmed_correct";
 export type SourceType = "document" | "correction" | "no_answer";

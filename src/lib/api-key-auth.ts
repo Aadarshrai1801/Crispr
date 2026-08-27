@@ -23,12 +23,12 @@ export class ApiKeyError extends Error {
   }
 }
 
-export function authenticateApiKey(request: Request): PublicApiContext {
+export async function authenticateApiKey(request: Request): Promise<PublicApiContext> {
   const header = request.headers.get("authorization") ?? "";
   const match = header.match(/^Bearer\s+(cris_[A-Za-z0-9_-]+)$/i);
   if (!match) throw new ApiKeyError("Missing or malformed Authorization header. Expected: Bearer cris_...");
 
-  const key = findApiKeyByHash(sha256Hex(match[1]));
+  const key = await findApiKeyByHash(sha256Hex(match[1]));
   if (!key) throw new ApiKeyError("Invalid, revoked, or unknown API key.", 401);
 
   let scopes: string[] = [];

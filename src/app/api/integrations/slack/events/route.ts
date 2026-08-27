@@ -62,10 +62,10 @@ export async function POST(request: Request) {
       });
     }
 
-    const wsId = config.slackDefaultWorkspaceId || defaultWorkspaceId();
+    const wsId = config.slackDefaultWorkspaceId || (await defaultWorkspaceId());
 
     const { readyDocumentIds } = await import("@/lib/retrieval");
-    const docIds = readyDocumentIds(wsId);
+    const docIds = await readyDocumentIds(wsId);
     if (!docIds.length) {
       return NextResponse.json({ response_type: "in_channel", text: "No documents are ingested in this workspace yet." });
     }

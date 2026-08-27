@@ -10,11 +10,11 @@ type Params = { params: Promise<{ id: string; hookId: string }> };
 export async function DELETE(request: Request, { params }: Params) {
   try {
     const { id, hookId } = await params;
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
-    const endpoint = getWebhookEndpoint(hookId);
+    const endpoint = await getWebhookEndpoint(hookId);
     if (!endpoint || endpoint.workspace_id !== id) return json({ error: "Webhook not found" }, 404);
-    deleteWebhookEndpoint(hookId);
+    await deleteWebhookEndpoint(hookId);
     return json({ ok: true });
   } catch (err) {
     return apiError(err);

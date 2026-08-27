@@ -11,7 +11,7 @@ type Params = { params: Promise<{ workspaceId: string }> };
 export async function GET(request: Request, { params }: Params) {
   try {
     const { workspaceId } = await params;
-    const ctx = requireContext(request, workspaceId);
+    const ctx = await requireContext(request, workspaceId);
     requireApprover(ctx);
     const analytics = await computeWorkspaceAnalytics(workspaceId);
     return json(analytics);

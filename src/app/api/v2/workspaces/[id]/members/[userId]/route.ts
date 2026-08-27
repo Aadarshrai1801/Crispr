@@ -18,12 +18,12 @@ export async function PATCH(request: Request, { params }: Params) {
   try {
     const { id, userId } = await params;
     const body = PatchSchema.parse(await request.json());
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
-    if (!getUser(userId)) return json({ error: "User not found" }, 404);
+    if (!(await getUser(userId))) return json({ error: "User not found" }, 404);
 
-    const member = upsertMember({ workspace_id: id, user_id: userId, role: body.role });
-    audit.write(id, ctx.userId, "member.role_changed", "user", userId, null, { role: body.role });
+    const member = await upsertMember({ workspace_id: id, user_id: userId, role: body.role });
+    await audit.write(id, ctx.userId, "member.role_changed", "user", userId, null, { role: body.role });
     return json({ member });
   } catch (err) {
     return apiError(err);
@@ -34,13 +34,13 @@ export async function PATCH(request: Request, { params }: Params) {
 export async function DELETE(request: Request, { params }: Params) {
   try {
     const { id, userId } = await params;
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
     if (userId === ctx.workspace.owner_id) {
       return json({ error: "The workspace owner cannot be removed." }, 409);
     }
-    removeMember(id, userId);
-    audit.write(id, ctx.userId, "member.removed", "user", userId, null, null);
+    await removeMember(id, userId);
+    await audit.write(id, ctx.userId, "member.removed", "user", userId, null, null);
     return json({ ok: true });
   } catch (err) {
     return apiError(err);

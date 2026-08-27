@@ -61,12 +61,12 @@ import {
   insertCorrection,
   insertDocument,
   insertQueryLog,
-  getDb,
+  rawQueryOne,
 } from "@/lib/db";
 
-function seedDoc(workspaceId: string): string {
+async function seedDoc(workspaceId: string): Promise<string> {
   const docId = "doc_" + randomUUID();
-  insertDocument({
+  await insertDocument({
     id: docId,
     workspace_id: workspaceId,
     owner_id: "user_test",
@@ -81,9 +81,9 @@ function seedDoc(workspaceId: string): string {
   return docId;
 }
 
-function makeQueryLog(workspaceId: string, question: string, documentIds: string[]) {
+async function makeQueryLog(workspaceId: string, question: string, documentIds: string[]) {
   const id = "ql_" + randomUUID();
-  insertQueryLog({
+  await insertQueryLog({
     id,
     workspace_id: workspaceId,
     user_id: "user_test",
@@ -106,12 +106,12 @@ function makeQueryLog(workspaceId: string, question: string, documentIds: string
 
 describe("correction-first precedence", () => {
   it("serves an active correction above threshold WITHOUT calling the LLM", async () => {
-    const wsId = defaultWorkspaceId();
-    const docId = seedDoc(wsId);
+    const wsId = await defaultWorkspaceId();
+    const docId = await seedDoc(wsId);
     const q = `Unique precedence question ${randomUUID()}`;
-    const logId = makeQueryLog(wsId, q, [docId]);
+    const logId = await makeQueryLog(wsId, q, [docId]);
 
-    const correction = insertCorrection({
+    const correction = await insertCorrection({
       workspace_id: wsId,
       document_id: docId,
       original_query_log_id: logId,
@@ -128,9 +128,10 @@ describe("correction-first precedence", () => {
     });
 
     correctionHits = [{ id: correction.id, similarity: 0.95 }];
-    const before = getDb().prepare("SELECT served_count FROM corrections WHERE id = ?").get(correction.id) as {
-      served_count: number;
-    };
+    const before = (await rawQueryOne<{ served_count: number }>(
+      "SELECT served_count FROM corrections WHERE id = ?",
+      [correction.id]
+    ))!;
 
     const result = await answerQuestion({ workspaceId: wsId, userId: "user_test", documentIds: [docId], question: q });
 
@@ -138,15 +139,16 @@ describe("correction-first precedence", () => {
     expect(result.answer).toBe("The corrected revenue figure is $4.2M.");
     expect(result.correction?.id).toBe(correction.id);
     expect(llmCalls).toHaveLength(0); // precedence: no generation happened
-    const after = getDb().prepare("SELECT served_count FROM corrections WHERE id = ?").get(correction.id) as {
-      served_count: number;
-    };
+    const after = (await rawQueryOne<{ served_count: number }>(
+      "SELECT served_count FROM corrections WHERE id = ?",
+      [correction.id]
+    ))!;
     expect(after.served_count).toBe(before.served_count + 1);
   });
 
   it("falls through to grounded retrieval when no correction matches", async () => {
-    const wsId = defaultWorkspaceId();
-    const docId = seedDoc(wsId);
+    const wsId = await defaultWorkspaceId();
+    const docId = await seedDoc(wsId);
     const q = `No-correction match ${randomUUID()}`;
 
     correctionHits = []; // nothing in the override layer matches
@@ -165,12 +167,12 @@ describe("correction-first precedence", () => {
   });
 
   it("pending corrections never override retrieval", async () => {
-    const wsId = defaultWorkspaceId();
-    const docId = seedDoc(wsId);
+    const wsId = await defaultWorkspaceId();
+    const docId = await seedDoc(wsId);
     const q = `Pending invisible ${randomUUID()}`;
-    const logId = makeQueryLog(wsId, q, [docId]);
+    const logId = await makeQueryLog(wsId, q, [docId]);
 
-    const pending = insertCorrection({
+    const pending = await insertCorrection({
       workspace_id: wsId,
       document_id: docId,
       original_query_log_id: logId,
@@ -200,17 +202,17 @@ describe("correction-first precedence", () => {
 
 describe("workspace-wide query narrowing (FR-37)", () => {
   it("keeps <=50 docs untouched", async () => {
-    const wsId = defaultWorkspaceId();
-    const ids = Array.from({ length: 10 }, () => seedDoc(wsId));
-    const scope = resolveQueryScope(ids, wsId);
+    const wsId = await defaultWorkspaceId();
+    const ids = await Promise.all(Array.from({ length: 10 }, () => seedDoc(wsId)));
+    const scope = await resolveQueryScope(ids, wsId);
     expect(scope.narrowed).toBe(false);
     expect(scope.documentIds).toHaveLength(10);
   });
 
   it("narrows beyond 50 docs instead of timing out", async () => {
-    const wsId = defaultWorkspaceId();
-    const ids = Array.from({ length: 60 }, () => seedDoc(wsId));
-    const scope = resolveQueryScope(ids, wsId);
+    const wsId = await defaultWorkspaceId();
+    const ids = await Promise.all(Array.from({ length: 60 }, () => seedDoc(wsId)));
+    const scope = await resolveQueryScope(ids, wsId);
     expect(scope.narrowed).toBe(true);
     expect(scope.documentIds).toHaveLength(50);
     // Kept documents must all be ready ones from this workspace.

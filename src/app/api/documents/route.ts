@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { logger } from "@/lib/logger";
@@ -9,10 +7,10 @@ import {
   countDocuments,
   defaultWorkspaceId,
   findDocumentByHash,
-  getDb,
   getDocument,
   insertDocument,
   listDocuments,
+  rawQuery,
 } from "@/lib/db";
 import { enqueueIngestion } from "@/lib/ingest";
 import { audit } from "@/lib/audit";
@@ -20,6 +18,7 @@ import { AuthzError, requireContext, resolveUserId } from "@/lib/rbac";
 import { isSupportedUpload } from "@/lib/formats";
 import { tierCaps } from "@/lib/config";
 import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { writeFileBytes } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,23 +26,25 @@ export const dynamic = "force-dynamic";
 const MAX_BYTES = 200 * 1024 * 1024;
 
 /** Mark documents stuck in `processing` as failed (interrupted by restart). */
-function sweepStale() {
-  getDb()
-    .prepare(
-      `UPDATE documents SET status = 'failed', error = 'Ingestion was interrupted (server restarted). Re-upload to retry.'
-       WHERE status = 'processing' AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-15 minutes')`
-    )
-    .run();
+async function sweepStale() {
+  await rawQuery(
+    `UPDATE documents SET status = 'failed', error = 'Ingestion was interrupted (server restarted). Re-upload to retry.'
+     WHERE status = 'processing' AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-15 minutes')`
+  );
 }
 
-function workspaceFromRequest(request: Request): string {
+async function workspaceFromRequest(request: Request): Promise<string> {
   const url = new URL(request.url);
-  return url.searchParams.get("workspace_id") ?? request.headers.get("x-crisp-workspace-id") ?? defaultWorkspaceId();
+  return (
+    url.searchParams.get("workspace_id") ??
+    request.headers.get("x-crisp-workspace-id") ??
+    (await defaultWorkspaceId())
+  );
 }
 
 export async function GET(request: Request) {
-  sweepStale();
-  const wsId = workspaceFromRequest(request);
+  await sweepStale();
+  const wsId = await workspaceFromRequest(request);
   try {
     // Viewers can list documents (FR-34); unauthenticated/non-members cannot.
     await requireContext(request, wsId);
@@ -51,7 +52,7 @@ export async function GET(request: Request) {
     if (err instanceof AuthzError) return NextResponse.json({ error: err.message }, { status: err.status });
     throw err;
   }
-  const docs = listDocuments(wsId);
+  const docs = await listDocuments(wsId);
   // Never expose absolute server paths
   return NextResponse.json(docs.map(({ storage_path: _sp, ...rest }) => rest));
 }
@@ -64,7 +65,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing file field" }, { status: 400 });
     }
     const force = String(form.get("force") ?? "") === "true";
-    const wsId = String(form.get("workspace_id") ?? workspaceFromRequest(request));
+    const wsId = String(form.get("workspace_id") ?? (await workspaceFromRequest(request)));
 
     const ctx = await import("@/lib/rbac").then((m) => m.requireContext(request, wsId));
     await import("@/lib/rbac").then((m) => m.requireContributor(ctx)); // FR-34: Viewer cannot upload
@@ -75,7 +76,7 @@ export async function POST(request: Request) {
 
     // PRD packaging: Free tier caps documents at 1-3.
     const cap = tierCaps[ctx.workspace.plan_tier].documents;
-    if (Number.isFinite(cap) && countDocuments(wsId) >= cap && !force) {
+    if (Number.isFinite(cap) && (await countDocuments(wsId)) >= cap && !force) {
       return NextResponse.json(
         { error: `Document cap reached for ${ctx.workspace.plan_tier} plan (${cap}). Upgrade to continue.`, code: "tier_cap" },
         { status: 402 }
@@ -109,7 +110,7 @@ export async function POST(request: Request) {
     }
 
     const hash = createHash("sha256").update(buffer).digest("hex");
-    const duplicate = findDocumentByHash(hash, wsId);
+    const duplicate = await findDocumentByHash(hash, wsId);
     if (duplicate && !force) {
       return NextResponse.json(
         {
@@ -122,15 +123,14 @@ export async function POST(request: Request) {
     }
 
     const id = "doc_" + randomUUID();
-    mkdirSync(uploadsDir(), { recursive: true });
     const ext = path.extname(file.name).toLowerCase() || ".bin";
     const storagePath = path.join(uploadsDir(), `${id}${ext}`);
-    await writeFile(storagePath, buffer);
+    await writeFileBytes(storagePath, buffer);
 
-    insertDocument({
+    await insertDocument({
       id,
       workspace_id: wsId,
-      owner_id: resolveUserId(request),
+      owner_id: await resolveUserId(request),
       filename: file.name,
       storage_path: storagePath,
       page_count: 0,
@@ -140,10 +140,10 @@ export async function POST(request: Request) {
       error: null,
     });
 
-    enqueueIngestion(id);
-    audit.write(wsId, ctx.userId, "document.uploaded", "document", id, null, { filename: file.name });
+    await enqueueIngestion(id);
+    await audit.write(wsId, ctx.userId, "document.uploaded", "document", id, null, { filename: file.name });
 
-    const { storage_path: _sp, ...safe } = getDocument(id)!;
+    const { storage_path: _sp, ...safe } = (await getDocument(id))!;
     return NextResponse.json(safe, { status: 202 });
   } catch (err) {
     if (err instanceof AuthzError) {

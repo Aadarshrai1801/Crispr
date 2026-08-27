@@ -19,10 +19,10 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const workspaceId = url.searchParams.get("workspace_id") ?? "ws_default";
-    const ctx = requireContext(request, workspaceId);
+    const ctx = await requireContext(request, workspaceId);
     requireTier(ctx.workspace, "apiKeys");
     requireAdmin(ctx);
-    return json({ keys: listApiKeys(workspaceId) });
+    return json({ keys: await listApiKeys(workspaceId) });
   } catch (err) {
     return apiError(err);
   }
@@ -32,13 +32,13 @@ export async function POST(request: Request) {
   try {
     const body = CreateSchema.parse(await request.json());
     const workspaceId = new URL(request.url).searchParams.get("workspace_id") ?? "ws_default";
-    const ctx = requireContext(request, workspaceId);
+    const ctx = await requireContext(request, workspaceId);
     requireTier(ctx.workspace, "apiKeys");
     requireAdmin(ctx);
 
     // Only the prefix is stored in plaintext; the full secret is hashed (sha-256).
     const secret = "cris_" + randomBytes(24).toString("base64url");
-    const key = insertApiKey({
+    const key = await insertApiKey({
       workspace_id: workspaceId,
       key_hash: sha256Hex(secret),
       key_prefix: secret.slice(0, 12),
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
       name: body.name,
     });
 
-    audit.write(workspaceId, ctx.userId, "apikey.created", "api_key", key.id, null, { name: body.name, scopes: body.scopes });
+    await audit.write(workspaceId, ctx.userId, "apikey.created", "api_key", key.id, null, { name: body.name, scopes: body.scopes });
     return json({ key, secret }, 201);
   } catch (err) {
     return apiError(err);

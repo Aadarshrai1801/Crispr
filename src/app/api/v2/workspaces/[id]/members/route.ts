@@ -19,8 +19,8 @@ const AddSchema = z.object({
 export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    requireContext(request, id);
-    return json({ members: listMembers(id) });
+    await requireContext(request, id);
+    return json({ members: await listMembers(id) });
   } catch (err) {
     return apiError(err);
   }
@@ -31,22 +31,22 @@ export async function POST(request: Request, { params }: Params) {
   try {
     const { id } = await params;
     const body = AddSchema.parse(await request.json());
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
 
-    const user = getUser(body.user_id);
+    const user = await getUser(body.user_id);
     if (!user) return json({ error: "User not found" }, 404);
 
     const cap = tierCaps[ctx.workspace.plan_tier].members;
-    if (memberCount(id) >= cap) {
+    if ((await memberCount(id)) >= cap) {
       return json(
         { error: `Member cap reached for ${ctx.workspace.plan_tier} tier (${cap}).` },
         402
       );
     }
 
-    const member = upsertMember({ workspace_id: id, user_id: body.user_id, role: body.role });
-    audit.write(id, ctx.userId, "member.added", "user", body.user_id, null, { role: body.role, email: user.email });
+    const member = await upsertMember({ workspace_id: id, user_id: body.user_id, role: body.role });
+    await audit.write(id, ctx.userId, "member.added", "user", body.user_id, null, { role: body.role, email: user.email });
     return json({ member }, 201);
   } catch (err) {
     return apiError(err);

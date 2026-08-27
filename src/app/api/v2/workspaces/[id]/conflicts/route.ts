@@ -15,9 +15,9 @@ export async function GET(request: Request, { params }: Params) {
     const { id } = await params;
     const url = new URL(request.url);
     const status = url.searchParams.get("status") as "open" | "resolved" | "dismissed" | null;
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireApprover(ctx);
-    return json({ conflicts: listConflictAlerts(id, status ?? undefined) });
+    return json({ conflicts: await listConflictAlerts(id, status ?? undefined) });
   } catch (err) {
     return apiError(err);
   }
@@ -27,7 +27,7 @@ export async function GET(request: Request, { params }: Params) {
 export async function POST(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireApprover(ctx);
     const result = await scanWorkspaceConflicts(id, ctx.userId);
     return json({ result });

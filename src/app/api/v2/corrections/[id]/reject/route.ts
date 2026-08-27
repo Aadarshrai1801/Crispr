@@ -18,9 +18,9 @@ export async function POST(request: Request, { params }: Params) {
   try {
     const { id } = await params;
     const body = BodySchema.parse(await request.json());
-    const existing = getCorrection(id);
+    const existing = await getCorrection(id);
     if (!existing) return json({ error: "Correction not found" }, 404);
-    const ctx = requireContext(request, existing.workspace_id);
+    const ctx = await requireContext(request, existing.workspace_id);
     requireApprover(ctx);
     const correction = await rejectCorrection(id, ctx.userId, body.reason);
     return json({ correction });

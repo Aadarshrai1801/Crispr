@@ -20,10 +20,10 @@ const BodySchema = z.object({
 export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const existing = getCorrection(id);
+    const existing = await getCorrection(id);
     if (!existing) return json({ error: "Correction not found" }, 404);
-    requireContext(request, existing.workspace_id);
-    return json({ comments: listComments(id) });
+    await requireContext(request, existing.workspace_id);
+    return json({ comments: await listComments(id) });
   } catch (err) {
     return apiError(err);
   }
@@ -33,13 +33,13 @@ export async function POST(request: Request, { params }: Params) {
   try {
     const { id } = await params;
     const body = BodySchema.parse(await request.json());
-    const existing = getCorrection(id);
+    const existing = await getCorrection(id);
     if (!existing) return json({ error: "Correction not found" }, 404);
-    const ctx = requireContext(request, existing.workspace_id);
+    const ctx = await requireContext(request, existing.workspace_id);
     requireContributor(ctx);
 
-    const comment = insertComment(id, ctx.userId, body.body.trim());
-    audit.write(existing.workspace_id, ctx.userId, "comment.added", "correction", id, null, {
+    const comment = await insertComment(id, ctx.userId, body.body.trim());
+    await audit.write(existing.workspace_id, ctx.userId, "comment.added", "correction", id, null, {
       comment_id: comment.id,
     });
     return json({ comment }, 201);

@@ -28,8 +28,8 @@ const ENTERPRISE_ONLY = new Set(["confluence", "sharepoint"]);
 export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    requireContext(request, id);
-    return json({ connections: listIntegrationConnections(id) });
+    await requireContext(request, id);
+    return json({ connections: await listIntegrationConnections(id) });
   } catch (err) {
     return apiError(err);
   }
@@ -40,7 +40,7 @@ export async function POST(request: Request, { params }: Params) {
   try {
     const { id } = await params;
     const body = ConnectSchema.parse(await request.json());
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
 
     if (ENTERPRISE_ONLY.has(body.provider)) {
@@ -52,7 +52,7 @@ export async function POST(request: Request, { params }: Params) {
     // credentials; this endpoint records the resulting connection + tokens.
     // A connect without credentials is a simulated handshake (local demo), so
     // the connection lands in "connected" either way.
-    const connection = upsertIntegrationConnection({
+    const connection = await upsertIntegrationConnection({
       workspace_id: id,
       provider: body.provider,
       display_name: body.display_name ?? "",
@@ -60,7 +60,7 @@ export async function POST(request: Request, { params }: Params) {
       sync_status: "connected",
     });
 
-    audit.write(id, ctx.userId, "integration.connected", "integration", body.provider, null, {
+    await audit.write(id, ctx.userId, "integration.connected", "integration", body.provider, null, {
       provider: body.provider,
       status: connection.sync_status,
     });
@@ -75,12 +75,12 @@ export async function DELETE(request: Request, { params }: Params) {
     const { id } = await params;
     const url = new URL(request.url);
     const provider = url.searchParams.get("provider") ?? "";
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
-    if (!getIntegrationConnection(id, provider)) return json({ error: "Connection not found" }, 404);
+    if (!(await getIntegrationConnection(id, provider))) return json({ error: "Connection not found" }, 404);
 
-    deleteIntegrationConnection(id, provider);
-    audit.write(id, ctx.userId, "integration.disconnected", "integration", provider, { provider }, null);
+    await deleteIntegrationConnection(id, provider);
+    await audit.write(id, ctx.userId, "integration.disconnected", "integration", provider, { provider }, null);
     return json({ ok: true });
   } catch (err) {
     return apiError(err);

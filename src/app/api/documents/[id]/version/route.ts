@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { copyFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { uploadsDir } from "@/lib/config";
 import {
   getDocument,
   insertDocumentVersion,
+  listCorrections,
   listCorrectionsNeedingVersionReview,
   listDocumentVersions,
   setNeedsVersionReview,
@@ -18,6 +17,7 @@ import { audit } from "@/lib/audit";
 import { dispatchWebhook } from "@/lib/webhooks";
 import { requireContext, requireContributor } from "@/lib/rbac";
 import { apiError } from "@/lib/api-helpers";
+import { copyFileBytes, readFileBytes, writeFileBytes } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -122,14 +122,16 @@ function diffSections(oldSections: Map<string, string>, newSections: Map<string,
 export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const doc = getDocument(id);
+    const doc = await getDocument(id);
     if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
     await requireContext(request, doc.workspace_id);
-    const versions = listDocumentVersions(id).map((v) => ({ ...v, storage_path: undefined }));
+    const versions = (await listDocumentVersions(id)).map((v) => ({ ...v, storage_path: undefined }));
     return NextResponse.json({
       versions,
       current_version_number: doc.version_number,
-      corrections_needing_review: listCorrectionsNeedingVersionReview(doc.workspace_id).filter((c) => c.document_id === id),
+      corrections_needing_review: (await listCorrectionsNeedingVersionReview(doc.workspace_id)).filter(
+        (c) => c.document_id === id
+      ),
     });
   } catch (err) {
     return apiError(err);
@@ -144,9 +146,9 @@ export async function GET(request: Request, { params }: Params) {
 export async function POST(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const doc = getDocument(id);
+    const doc = await getDocument(id);
     if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
-    const ctx = requireContext(request, doc.workspace_id);
+    const ctx = await requireContext(request, doc.workspace_id);
     requireContributor(ctx);
 
     const form = await request.formData();
@@ -157,7 +159,7 @@ export async function POST(request: Request, { params }: Params) {
     const buffer = Buffer.from(await file.arrayBuffer());
 
     // Extract BOTH texts for the diff before touching anything.
-    const oldBuffer = await readFile(doc.storage_path);
+    const oldBuffer = await readFileBytes(doc.storage_path);
     const oldExtract = await extractAnyDocument(oldBuffer, doc.filename);
     const newExtract = await extractAnyDocument(buffer, file.name);
 
@@ -168,13 +170,12 @@ export async function POST(request: Request, { params }: Params) {
 
     // Archive the current file under its version number, then replace it.
     const versionsDir = path.join(uploadsDir(), "versions", id);
-    mkdirSync(versionsDir, { recursive: true });
     const ext = path.extname(doc.filename).toLowerCase() || ".bin";
     const archivedPath = path.join(versionsDir, `v${doc.version_number}${ext}`);
-    await copyFile(doc.storage_path, archivedPath);
+    await copyFileBytes(doc.storage_path, archivedPath);
 
     const hash = createHash("sha256").update(buffer).digest("hex");
-    await writeFile(doc.storage_path, buffer);
+    await writeFileBytes(doc.storage_path, buffer);
 
     const diffSummary = {
       ...diff,
@@ -186,7 +187,7 @@ export async function POST(request: Request, { params }: Params) {
       },
     };
 
-    const version = insertDocumentVersion({
+    const version = await insertDocumentVersion({
       document_id: id,
       version_number: nextVersion,
       uploaded_by: ctx.userId,
@@ -196,7 +197,7 @@ export async function POST(request: Request, { params }: Params) {
       page_count: newExtract.pageCount,
     });
 
-    updateDocumentStatus(id, {
+    await updateDocumentStatus(id, {
       filename: file.name,
       file_hash: hash,
       status: "processing",
@@ -206,18 +207,18 @@ export async function POST(request: Request, { params }: Params) {
     });
 
     // FR-39: prompt review of whether existing corrections still apply.
-    const affected = listCorrectionsNeedingVersionReview(doc.workspace_id)
+    const affected = (await listCorrectionsNeedingVersionReview(doc.workspace_id))
       .filter((c) => c.document_id === id)
       .map((c) => c.id);
-    const allDocCorrections = (
-      await import("@/lib/db")
-    ).listCorrections(doc.workspace_id, id).filter((c) => ["active", "pending"].includes(c.status));
-    for (const c of allDocCorrections) setNeedsVersionReview(c.id, true);
+    const allDocCorrections = (await listCorrections(doc.workspace_id, id)).filter((c) =>
+      ["active", "pending"].includes(c.status)
+    );
+    for (const c of allDocCorrections) await setNeedsVersionReview(c.id, true);
 
-    enqueueIngestion(id);
+    await enqueueIngestion(id);
     scheduleConflictScan(doc.workspace_id);
 
-    audit.write(doc.workspace_id, ctx.userId, "document.version_updated", "document", id,
+    await audit.write(doc.workspace_id, ctx.userId, "document.version_updated", "document", id,
       { version: doc.version_number },
       { version: nextVersion, filename: file.name, material_changes: materialChanges });
     dispatchWebhook("document.version_updated", doc.workspace_id, {

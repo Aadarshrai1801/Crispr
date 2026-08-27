@@ -57,8 +57,8 @@ export async function generateCrossDocSuggestions(correction: CorrectionLike): P
   let created = 0;
   for (const m of top) {
     const canonical = `${correction.question_text} [${m.document_id}]`;
-    if (findSimilarPendingSuggestion(correction.workspace_id, canonical)) continue;
-    insertSuggestedCorrection({
+    if (await findSimilarPendingSuggestion(correction.workspace_id, canonical)) continue;
+    await insertSuggestedCorrection({
       workspace_id: correction.workspace_id,
       source_pattern: {
         type: "cross_doc",
@@ -126,10 +126,10 @@ export async function clusterFlaggedQuestions(
 
 export async function generateRepeatedFlagSuggestions(workspaceId: string): Promise<number> {
   const since = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString().replace("T", " ").slice(0, 19);
-  const flagged = listFlaggedLogsSince(workspaceId, since);
+  const flagged = await listFlaggedLogsSince(workspaceId, since);
   if (flagged.length < config.repeatedFlagClusterSize) return 0;
 
-  const correctedQuestions = hasActiveCorrectionForQuestions(workspaceId);
+  const correctedQuestions = await hasActiveCorrectionForQuestions(workspaceId);
   const candidates = flagged
     .filter((l) => !correctedQuestions.has(l.question_text.toLowerCase().trim()))
     .map((l) => ({ query_log_id: l.id, question_text: l.question_text, answer_text: l.answer_text }));
@@ -144,7 +144,7 @@ export async function generateRepeatedFlagSuggestions(workspaceId: string): Prom
   for (const cluster of bigClusters) {
     const canonicalLog = cluster.logs[0];
     const canonicalKey = `${workspaceId}:${canonicalLog.question_text.toLowerCase().trim()}`;
-    if (findSimilarPendingSuggestion(workspaceId, canonicalKey)) continue;
+    if (await findSimilarPendingSuggestion(workspaceId, canonicalKey)) continue;
 
     let suggestedText = "";
     let rationale = `This same question has been flagged ${cluster.logs.length} times without a persisted correction. Reviewing it once would stop the repeat flags.`;
@@ -163,7 +163,7 @@ export async function generateRepeatedFlagSuggestions(workspaceId: string): Prom
       rationale += " A drafted answer could not be auto-generated — please supply the correct answer.";
     }
 
-    insertSuggestedCorrection({
+    await insertSuggestedCorrection({
       workspace_id: workspaceId,
       source_pattern: {
         type: "repeated_question",
@@ -189,7 +189,7 @@ export async function acceptSuggestion(
   actorId: string,
   overrides?: { corrected_answer?: string; document_id?: string | null; submitterRole?: WorkspaceRole | null }
 ) {
-  const suggestion = getSuggestedCorrection(suggestionId);
+  const suggestion = await getSuggestedCorrection(suggestionId);
   if (!suggestion) throw new Error("Suggestion not found");
   if (suggestion.status !== "pending") throw new Error(`Suggestion already ${suggestion.status}`);
 
@@ -205,14 +205,14 @@ export async function acceptSuggestion(
   let documentId: string | null = null;
 
   if (pattern.type === "repeated_question") {
-    const log = getQueryLog(pattern.cluster[0].query_log_id);
+    const log = await getQueryLog(pattern.cluster[0].query_log_id);
     if (!log) throw new Error("Original flagged query no longer exists");
     originalQueryLogId = log.id;
     wrongAnswer = log.answer_text;
     questionText = log.question_text;
     documentId = overrides?.document_id ?? (JSON.parse(log.document_ids)[0] as string | undefined) ?? null;
   } else {
-    const source = getCorrection(pattern.correction_id);
+    const source = await getCorrection(pattern.correction_id);
     if (!source) throw new Error("Source correction no longer exists");
     originalQueryLogId = source.original_query_log_id;
     wrongAnswer = source.wrong_answer_text;
@@ -233,15 +233,15 @@ export async function acceptSuggestion(
     submitter_role: overrides?.submitterRole ?? null,
   });
 
-  setSuggestedCorrectionStatus(suggestion.id, "accepted");
+  await setSuggestedCorrectionStatus(suggestion.id, "accepted");
   return correction;
 }
 
 export async function dismissSuggestion(suggestionId: string, actorId: string) {
-  const suggestion = getSuggestedCorrection(suggestionId);
+  const suggestion = await getSuggestedCorrection(suggestionId);
   if (!suggestion) throw new Error("Suggestion not found");
-  setSuggestedCorrectionStatus(suggestionId, "dismissed");
-  auditLog.write(suggestion.workspace_id, actorId, "suggestion.dismissed", "suggested_correction", suggestionId, { status: "pending" }, { status: "dismissed" });
+  await setSuggestedCorrectionStatus(suggestionId, "dismissed");
+  await auditLog.write(suggestion.workspace_id, actorId, "suggestion.dismissed", "suggested_correction", suggestionId, { status: "pending" }, { status: "dismissed" });
 }
 
 type SuggestedPattern =

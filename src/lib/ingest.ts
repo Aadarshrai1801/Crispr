@@ -1,4 +1,3 @@
-import { readFile, unlink } from "node:fs/promises";
 import { config } from "./config";
 import { chunkPages } from "./chunker";
 import { extractAnyDocument } from "./formats";
@@ -14,6 +13,7 @@ import {
   updateDocumentStatus,
 } from "./db";
 import { logger } from "./logger";
+import { deleteFileBytes, readFileBytes } from "./storage";
 
 declare global {
   var __crispConflictScanTimers: Map<string, ReturnType<typeof setTimeout>> | undefined;
@@ -29,8 +29,8 @@ let recovered = false;
  * survive process restarts. On the first pump after boot, jobs left in
  * `processing` by a crashed process are re-claimed automatically.
  */
-export function enqueueIngestion(documentId: string) {
-  enqueueIngestJob(documentId);
+export async function enqueueIngestion(documentId: string) {
+  await enqueueIngestJob(documentId);
   void pump();
 }
 
@@ -40,12 +40,13 @@ async function pump() {
   try {
     if (!recovered) recovered = true; // interrupted 'processing' rows are re-claimable by design
     for (;;) {
-      const job = claimNextIngestJob();
+      const job = await claimNextIngestJob();
       if (!job) break;
       try {
         await ingest(job.document_id);
-        completeIngestJob(job.id);
-        scheduleConflictScan(getDocument(job.document_id)?.workspace_id);
+        await completeIngestJob(job.id);
+        const ingestedDoc = await getDocument(job.document_id);
+        scheduleConflictScan(ingestedDoc?.workspace_id);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown ingestion failure";
         const willRetry = job.attempts < MAX_JOB_ATTEMPTS && !(err instanceof PermanentIngestError);
@@ -53,8 +54,8 @@ async function pump() {
           { document_id: job.document_id, attempt: job.attempts, will_retry: willRetry, err },
           "ingestion failed"
         );
-        failIngestJob(job.id, message, willRetry);
-        updateDocumentStatus(job.document_id, {
+        await failIngestJob(job.id, message, willRetry);
+        await updateDocumentStatus(job.document_id, {
           status: willRetry ? "processing" : "failed",
           error: willRetry ? `${message} (retrying)` : message,
         });
@@ -96,11 +97,11 @@ export function scheduleConflictScan(workspaceId?: string, delayMs = 30_000) {
 }
 
 export async function ingest(documentId: string): Promise<void> {
-  const doc = getDocument(documentId);
+  const doc = await getDocument(documentId);
   if (!doc) throw new Error("Document not found");
-  updateDocumentStatus(documentId, { status: "processing", error: null });
+  await updateDocumentStatus(documentId, { status: "processing", error: null });
 
-  const buffer = await readFile(doc.storage_path);
+  const buffer = await readFileBytes(doc.storage_path);
 
   const extracted = await extractAnyDocument(buffer, doc.filename);
   const { pages, format } = extracted;
@@ -143,7 +144,7 @@ export async function ingest(documentId: string): Promise<void> {
     }))
   );
 
-  updateDocumentStatus(documentId, {
+  await updateDocumentStatus(documentId, {
     status: "ready",
     page_count: pageCount,
     ocr_warning: ocrUsed || lowConfidence > 0,
@@ -156,7 +157,7 @@ export async function ingest(documentId: string): Promise<void> {
 
 export async function deleteDocumentFile(storagePath: string) {
   try {
-    await unlink(storagePath);
+    await deleteFileBytes(storagePath);
   } catch {
     /* file may already be gone */
   }

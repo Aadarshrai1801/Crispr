@@ -17,12 +17,12 @@ type Params = { params: Promise<{ queryLogId: string }> };
 export async function POST(request: Request, { params }: Params) {
   try {
     const { queryLogId } = await params;
-    const log = getQueryLog(queryLogId);
+    const log = await getQueryLog(queryLogId);
     if (!log) return NextResponse.json({ error: "Query log not found" }, { status: 404 });
 
     // Blocker #1: this route previously had no auth at all. Identity comes
     // from the session; the caller must be a member of the log's workspace.
-    const ctx = await requireContext(request, log.workspace_id || defaultWorkspaceId());
+    const ctx = await requireContext(request, log.workspace_id || (await defaultWorkspaceId()));
     const limit = checkRateLimit(`query:${ctx.userId}`, "llmQuery");
     if (!limit.ok) return rateLimitResponse(limit);
 
@@ -38,7 +38,7 @@ export async function POST(request: Request, { params }: Params) {
     }
 
     const payload = await answerQuestion({
-      workspaceId: log.workspace_id || defaultWorkspaceId(),
+      workspaceId: log.workspace_id || (await defaultWorkspaceId()),
       userId: ctx.userId,
       documentIds: JSON.parse(log.document_ids) as string[],
       question: log.question_text,

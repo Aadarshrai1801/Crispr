@@ -1,234 +1,75 @@
-import * as lancedb from "@lancedb/lancedb";
-import { mkdirSync } from "node:fs";
-import { lanceDbDir } from "./config";
-
-/** table.search() overloads produce a union; pin to the vector variant for chaining. */
-function cosineSearch(table: lancedb.Table, vector: number[]): lancedb.VectorQuery {
-  return (table.search(vector) as unknown as lancedb.VectorQuery).distanceType("cosine");
-}
-
-declare global {
-  var __crispLance: lancedb.Connection | undefined;
-}
-
-export async function getVectorDb(): Promise<lancedb.Connection> {
-  if (!globalThis.__crispLance) {
-    mkdirSync(lanceDbDir(), { recursive: true });
-    globalThis.__crispLance = await lancedb.connect(lanceDbDir());
-  }
-  return globalThis.__crispLance;
-}
-
-async function openOrCreateTable(name: string, sampleRows: Record<string, unknown>[]): Promise<lancedb.Table> {
-  const db = await getVectorDb();
-  const names = await db.tableNames();
-  if (names.includes(name)) return await db.openTable(name);
-  return await db.createTable(name, sampleRows.length ? sampleRows : [emptyRow(name)]);
-}
-
-function emptyRow(name: string): Record<string, unknown> {
-  if (name === "chunks") {
-    return { vector: Array(EMBED_DIM).fill(0), id: "", document_id: "", workspace_id: "", page_number: 0, section_label: "", text: "" };
-  }
-  return {
-    vector: Array(EMBED_DIM).fill(0),
-    id: "",
-    workspace_id: "",
-    document_id: "",
-    scope: "document",
-  };
-}
+import { storageBackend } from "./config";
+import * as local from "./vector-local";
+import * as supabase from "./vector-supabase";
 
 /**
- * Embedding dimension is fixed by the configured model; we detect it lazily on first write.
- * MiniLM-L6-v2 -> 384.
+ * Vector-storage facade.
+ *
+ * `local` (default) uses LanceDB on the local filesystem; `supabase` uses the
+ * Postgres `chunks` / `corrections_index` tables with pgvector. Selection is
+ * driven by `storageBackend()` (see config), identical to the `db.ts` facade.
+ * Every operation here is async so callers work against either backend.
+ *
+ * NOTE: The pgvector extension and tables must exist (run
+ * `src/lib/schema-pg.sql`) before the supabase backend can be used.
  */
+
+const isSupabase = () => storageBackend() === "supabase";
+
+// Embedding dimension detection is shared so both backends agree on shape.
 export let EMBED_DIM = 384;
 export function setEmbedDim(dim: number) {
   if (dim > 0 && dim !== EMBED_DIM) EMBED_DIM = dim;
 }
+export type { ChunkVectorRow, RetrievedChunkRow, CorrectionIndexHit, CorrectionVectorRow } from "./vector-local";
 
-export interface ChunkVectorRow {
-  id: string;
-  document_id: string;
-  workspace_id: string;
-  page_number: number;
-  section_label: string;
-  text: string;
-  [key: string]: unknown;
-}
-
-export async function upsertChunkVectors(rows: (ChunkVectorRow & { vector: number[] })[]) {
+export async function upsertChunkVectors(rows: (local.ChunkVectorRow & { vector: number[] })[]) {
   if (!rows.length) return;
   setEmbedDim(rows[0].vector.length);
-  const table = await openOrCreateTable("chunks", rows);
-  await table.add(rows as unknown as Record<string, unknown>[], { mode: "append" });
-}
-
-/**
- * LanceDB filters are SQL-ish strings without bound parameters; document ids
- * are always internally generated `doc_<uuid>` values, and we escape quotes
- * anyway so no external input can break out of the literal.
- */
-function safeFilterValue(value: string): string {
-  if (!/^doc_[A-Za-z0-9_-]+$/.test(value)) {
-    throw new Error(`Refusing to build filter for unexpected id format: ${value.slice(0, 8)}...`);
-  }
-  return value.replace(/'/g, "''");
+  return isSupabase()
+    ? supabase.upsertChunkVectors(rows as unknown as (supabase.ChunkVectorRow & { vector: number[] })[])
+    : local.upsertChunkVectors(rows);
 }
 
 export async function deleteVectorsForDocument(documentId: string) {
-  const db = await getVectorDb();
-  const names = await db.tableNames();
-  if (!names.includes("chunks")) return;
-  const table = await db.openTable("chunks");
-  await table.delete(`document_id = '${safeFilterValue(documentId)}'`);
+  return isSupabase() ? supabase.deleteVectorsForDocument(documentId) : local.deleteVectorsForDocument(documentId);
 }
 
-function simFromDistance(r: Record<string, unknown>): number {
-  const d = Number(r._distance);
-  return Number.isFinite(d) ? 1 - d : 0;
+export async function searchChunks(vector: number[], documentIds: string[], topK: number): Promise<local.RetrievedChunkRow[]> {
+  return isSupabase() ? supabase.searchChunks(vector, documentIds, topK) : local.searchChunks(vector, documentIds, topK);
 }
 
-export async function searchChunks(vector: number[], documentIds: string[], topK: number): Promise<RetrievedChunkRow[]> {
-  const db = await getVectorDb();
-  const names = await db.tableNames();
-  if (!names.includes("chunks") || !documentIds.length) return [];
-  const table = await db.openTable("chunks");
-  const filter = `document_id IN (${documentIds.map((d) => `'${d}'`).join(",")})`;
-  const rows = (await cosineSearch(table, vector)
-    .where(filter)
-    .limit(Math.min(topK * 3, 200))
-    .toArray()) as unknown as Array<Record<string, unknown>>;
-  return rows
-    .map((r) => ({
-      id: String(r.id),
-      document_id: String(r.document_id),
-      workspace_id: String(r.workspace_id),
-      page_number: Number(r.page_number),
-      section_label: (r.section_label as string) || "",
-      text: String(r.text),
-      score: simFromDistance(r),
-    }))
-    .sort((a, b) => b.score - a.score);
+export async function listWorkspaceChunks(workspaceId: string, limit = 2000): Promise<Array<local.ChunkVectorRow & { vector: number[] }>> {
+  return isSupabase()
+    ? supabase.listWorkspaceChunks(workspaceId, limit)
+    : local.listWorkspaceChunks(workspaceId, limit);
 }
 
-export interface RetrievedChunkRow {
-  id: string;
-  document_id: string;
-  workspace_id: string;
-  page_number: number;
-  section_label: string;
-  text: string;
-  score: number;
-}
-
-/**
- * Non-vector scan of a workspace's chunks — used by conflict detection and
- * compounding suggestions. Capped to keep local scans fast.
- */
-export async function listWorkspaceChunks(workspaceId: string, limit = 2000): Promise<Array<ChunkVectorRow & { vector: number[] }>> {
-  const db = await getVectorDb();
-  const names = await db.tableNames();
-  if (!names.includes("chunks")) return [];
-  const table = await db.openTable("chunks");
-  const rows = (await table
-    .query()
-    .where(`workspace_id = '${workspaceId}'`)
-    .limit(limit)
-    .toArray()) as unknown as Array<Record<string, unknown>>;
-  return rows.map((r) => ({
-    id: String(r.id),
-    document_id: String(r.document_id),
-    workspace_id: String(r.workspace_id),
-    page_number: Number(r.page_number),
-    section_label: (r.section_label as string) || "",
-    text: String(r.text),
-    vector: (r.vector as number[]) ?? [],
-  }));
-}
-
-/** Cross-document similar-passage search used by FR-50 suggestion generation. */
 export async function searchChunksWorkspace(
   vector: number[],
   workspaceId: string,
   excludeDocumentIds: string[],
   limit = 8
-): Promise<RetrievedChunkRow[]> {
-  const db = await getVectorDb();
-  const names = await db.tableNames();
-  if (!names.includes("chunks")) return [];
-  const table = await db.openTable("chunks");
-  const exclusions = excludeDocumentIds.length
-    ? ` AND document_id NOT IN (${excludeDocumentIds.map((d) => `'${d}'`).join(",")})`
-    : "";
-  const rows = (await cosineSearch(table, vector)
-    .where(`workspace_id = '${workspaceId}'${exclusions}`)
-    .limit(Math.max(limit * 4, 40))
-    .toArray()) as unknown as Array<Record<string, unknown>>;
-  return rows
-    .map((r) => ({
-      id: String(r.id),
-      document_id: String(r.document_id),
-      workspace_id: String(r.workspace_id),
-      page_number: Number(r.page_number),
-      section_label: (r.section_label as string) || "",
-      text: String(r.text),
-      score: simFromDistance(r),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+): Promise<local.RetrievedChunkRow[]> {
+  return isSupabase()
+    ? supabase.searchChunksWorkspace(vector, workspaceId, excludeDocumentIds, limit)
+    : local.searchChunksWorkspace(vector, workspaceId, excludeDocumentIds, limit);
 }
 
-export interface CorrectionIndexHit {
-  id: string;
-  similarity: number;
-}
-
-export interface CorrectionVectorRow {
-  id: string;
-  workspace_id: string;
-  document_id: string;
-  scope: string;
-  [key: string]: unknown;
-}
-
-export async function upsertCorrectionVectors(rows: CorrectionVectorRow[]) {
+export async function upsertCorrectionVectors(rows: local.CorrectionVectorRow[]) {
   if (!rows.length) return;
-  setEmbedDim((rows[0] as CorrectionVectorRow & { vector?: number[] }).vector?.length ?? EMBED_DIM);
-  const table = await openOrCreateTable("corrections_index", rows);
-  await table.add(rows, { mode: "append" });
+  setEmbedDim((rows[0] as local.CorrectionVectorRow & { vector?: number[] }).vector?.length ?? EMBED_DIM);
+  return isSupabase()
+    ? supabase.upsertCorrectionVectors(rows)
+    : local.upsertCorrectionVectors(rows);
 }
 
 export async function removeCorrectionVector(id: string) {
-  const db = await getVectorDb();
-  const names = await db.tableNames();
-  if (!names.includes("corrections_index")) return;
-  const table = await db.openTable("corrections_index");
-  await table.delete(`id = '${id}'`);
+  return isSupabase() ? supabase.removeCorrectionVector(id) : local.removeCorrectionVector(id);
 }
 
-export async function searchCorrections(vector: number[], workspaceId: string, documentIds: string[], threshold: number): Promise<CorrectionIndexHit[]> {
-  const db = await getVectorDb();
-  const names = await db.tableNames();
-  if (!names.includes("corrections_index")) return [];
-  const table = await openTableSafe(db, "corrections_index");
-  if (!table) return [];
-  // scope='workspace' corrections match regardless of which docs are in play.
-  // With no documents in play, only workspace-scoped corrections are eligible.
-  const docClause = documentIds.length ? ` OR document_id IN (${documentIds.map((d) => `'${d}'`).join(",")})` : "";
-  const filter = `workspace_id = '${workspaceId}' AND (scope = 'workspace'${docClause})`;
-  const rows = (await cosineSearch(table, vector)
-    .where(filter)
-    .limit(20)
-    .toArray()) as unknown as Array<Record<string, unknown>>;
-  return rows
-    .map((r) => ({ id: String(r.id), similarity: simFromDistance(r) }))
-    .filter((h) => h.similarity >= threshold)
-    .sort((a, b) => b.similarity - a.similarity);
-}
-
-async function openTableSafe(db: lancedb.Connection, name: string): Promise<lancedb.Table | null> {
-  const names = await db.tableNames();
-  return names.includes(name) ? await db.openTable(name) : null;
+export async function searchCorrections(vector: number[], workspaceId: string, documentIds: string[], threshold: number): Promise<local.CorrectionIndexHit[]> {
+  return isSupabase()
+    ? supabase.searchCorrections(vector, workspaceId, documentIds, threshold)
+    : local.searchCorrections(vector, workspaceId, documentIds, threshold);
 }

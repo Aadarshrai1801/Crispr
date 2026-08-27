@@ -158,6 +158,33 @@ export interface SuggestedCorrectionDto {
   generated_at: string;
 }
 
+export interface ChatSessionDto {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  title: string;
+  document_ids: string[]; // parsed
+  status: "active" | "archived";
+  created_at: string;
+  updated_at: string;
+  last_message_at: string | null;
+  message_count: number;
+}
+
+export interface ChatMessageDto {
+  id: string;
+  session_id: string;
+  role: "user" | "assistant";
+  /** User messages: { question }. Assistant messages: { result: QueryResultDto }. */
+  content: { question?: string } | { result: QueryResultDto };
+  query_log_id: string | null;
+  created_at: string;
+}
+
+export interface ChatSessionDetailDto extends ChatSessionDto {
+  messages: ChatMessageDto[];
+}
+
 export interface ApiKeyDto {
   id: string;
   workspace_id: string;
@@ -317,6 +344,19 @@ export const api = {
 
   feedback: (queryLogId: string, verdict: "flagged" | "confirmed_correct", correctionId?: string) =>
     jsonRequest<{ ok: boolean }>("/api/feedback", "POST", { query_log_id: queryLogId, verdict, correction_id: correctionId }),
+
+  /* ---- persistent chat sessions (Phase 1) ---- */
+  listChatSessions: () => request("/api/chats").then((r) => handle<{ sessions: ChatSessionDto[] }>(r)),
+  createChatSession: (input: { title?: string; document_ids?: string[] }) =>
+    jsonRequest<{ session: ChatSessionDto }>("/api/chats", "POST", input),
+  getChatSession: (id: string) =>
+    request(`/api/chats/${encodeURIComponent(id)}`).then((r) => handle<{ session: ChatSessionDetailDto }>(r)),
+  appendChatMessages: (id: string, messages: Array<{ role: "user" | "assistant"; content: unknown; query_log_id?: string | null }>) =>
+    jsonRequest<{ session: ChatSessionDto; message_count: number }>(`/api/chats/${encodeURIComponent(id)}/messages`, "POST", { messages }),
+  renameChatSession: (id: string, title: string) =>
+    jsonRequest<{ session: ChatSessionDto }>(`/api/chats/${encodeURIComponent(id)}`, "PATCH", { title }),
+  deleteChatSession: (id: string) =>
+    request(`/api/chats/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => handle<{ ok: boolean }>(r)),
 
   /* ---- corrections ---- */
   corrections: (documentId?: string) => {

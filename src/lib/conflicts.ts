@@ -60,7 +60,7 @@ export interface ConflictScanResult {
 }
 
 export async function scanWorkspaceConflicts(workspaceId: string, actorId?: string): Promise<ConflictScanResult> {
-  const docs = listDocuments(workspaceId).filter((d) => d.status === "ready");
+  const docs = (await listDocuments(workspaceId)).filter((d) => d.status === "ready");
   if (docs.length < 2) {
     return { scanned_chunks: 0, candidate_pairs: 0, alerts_created: 0, llm_verified: false };
   }
@@ -107,7 +107,7 @@ export async function scanWorkspaceConflicts(workspaceId: string, actorId?: stri
     const pair = candidates[k];
     const A = capped[pair.aIndex];
     const B = capped[pair.bIndex];
-    if (findExistingConflict(workspaceId, A.id, B.id)) continue;
+    if (await findExistingConflict(workspaceId, A.id, B.id)) continue;
 
     const verdict = verdicts?.find((v) => v.index === k + 1);
     if (llmVerified && verdict && !verdict.conflicting) continue;
@@ -116,7 +116,7 @@ export async function scanWorkspaceConflicts(workspaceId: string, actorId?: stri
       verdict?.rationale ??
       (llmVerified ? null : "Heuristic match only (LLM verification unavailable) — review manually.");
 
-    insertConflictAlert({
+    await insertConflictAlert({
       workspace_id: workspaceId,
       document_a_id: A.document_id,
       passage_a_ref: A.id,
@@ -130,13 +130,13 @@ export async function scanWorkspaceConflicts(workspaceId: string, actorId?: stri
     created++;
     const docAName = namesById.get(A.document_id) ?? A.document_id;
     const docBName = namesById.get(B.document_id) ?? B.document_id;
-    audit.write(workspaceId, actorId ?? "system", "conflict.detected", "document_pair", `${A.document_id}~${B.document_id}`, null, {
+    await audit.write(workspaceId, actorId ?? "system", "conflict.detected", "document_pair", `${A.document_id}~${B.document_id}`, null, {
       document_a: docAName,
       document_b: docBName,
       similarity: Number(pair.similarity.toFixed(4)),
       verified_by_llm: llmVerified,
     });
-    dispatchWebhook("conflict.detected", workspaceId, {
+    await dispatchWebhook("conflict.detected", workspaceId, {
       document_a: { id: A.document_id, name: docAName, page: A.page_number },
       document_b: { id: B.document_id, name: docBName, page: B.page_number },
       similarity: pair.similarity,

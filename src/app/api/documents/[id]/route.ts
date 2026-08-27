@@ -1,10 +1,18 @@
+import path from "node:path";
 import { NextResponse } from "next/server";
-import { deleteCorrectionsForDocument, getDb, getDocument, listCorrections } from "@/lib/db";
+import {
+  deleteCommentsForCorrections,
+  deleteCorrectionsForDocument,
+  getDocument,
+  listCorrections,
+  rawQuery,
+} from "@/lib/db";
 import { deleteVectorsForDocument, removeCorrectionVector } from "@/lib/vector";
 import { deleteDocumentFile } from "@/lib/ingest";
 import { audit } from "@/lib/audit";
 import { requireContext, requireContributor, AuthzError } from "@/lib/rbac";
 import { logger } from "@/lib/logger";
+import { deleteFileBytes } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +21,7 @@ type Params = { params: Promise<{ id: string }> };
 
 export async function GET(request: Request, { params }: Params) {
   const { id } = await params;
-  const doc = getDocument(id);
+  const doc = await getDocument(id);
   if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
   try {
     await requireContext(request, doc.workspace_id);
@@ -32,33 +40,31 @@ export async function GET(request: Request, { params }: Params) {
  */
 export async function DELETE(request: Request, { params }: Params) {
   const { id } = await params;
-  const doc = getDocument(id);
+  const doc = await getDocument(id);
   if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
 
   try {
-    const ctx = requireContext(request, doc.workspace_id);
+    const ctx = await requireContext(request, doc.workspace_id);
     requireContributor(ctx); // FR-34: Viewer cannot delete
 
     await deleteVectorsForDocument(id);
 
-    const scoped = listCorrections(doc.workspace_id).filter((c) => c.document_id === id);
+    const scoped = (await listCorrections(doc.workspace_id)).filter((c) => c.document_id === id);
     for (const c of scoped) {
       await removeCorrectionVector(c.id).catch(() => undefined);
     }
     if (scoped.length) {
-      (await import("@/lib/db")).deleteCommentsForCorrections(scoped.map((c) => c.id));
+      await deleteCommentsForCorrections(scoped.map((c) => c.id));
     }
-    deleteCorrectionsForDocument(id);
-    deleteDocumentFile(doc.storage_path);
+    await deleteCorrectionsForDocument(id);
+    await deleteDocumentFile(doc.storage_path);
 
     // Version archives live under uploads/versions/<id>; remove them too.
-    const path = await import("node:path");
-    const rm = await import("node:fs/promises");
-    await rm.rm(path.join(doc.storage_path, "..", "versions", id), { recursive: true, force: true }).catch(() => undefined);
+    await deleteFileBytes(path.join(doc.storage_path, "..", "versions", id)).catch(() => undefined);
 
-    audit.write(doc.workspace_id, ctx.userId, "document.deleted", "document", id, { filename: doc.filename }, null);
-    getDb().prepare("DELETE FROM document_versions WHERE document_id = ?").run(id);
-    getDb().prepare("DELETE FROM documents WHERE id = ?").run(id);
+    await audit.write(doc.workspace_id, ctx.userId, "document.deleted", "document", id, { filename: doc.filename }, null);
+    await rawQuery("DELETE FROM document_versions WHERE document_id = ?", [id]);
+    await rawQuery("DELETE FROM documents WHERE id = ?", [id]);
 
     return NextResponse.json({ ok: true });
   } catch (err) {

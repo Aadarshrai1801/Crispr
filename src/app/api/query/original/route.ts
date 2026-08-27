@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     let question = body.question ?? "";
     if (!question && body.query_log_id) {
       const { getQueryLog } = await import("@/lib/db");
-      question = getQueryLog(body.query_log_id)?.question_text ?? "";
+      question = (await getQueryLog(body.query_log_id))?.question_text ?? "";
     }
     if (!question) return NextResponse.json({ error: "Could not resolve question" }, { status: 400 });
 

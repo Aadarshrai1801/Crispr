@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -12,6 +10,7 @@ import { requireContext, requireContributor } from "@/lib/rbac";
 import { apiError } from "@/lib/api-helpers";
 import { safeFetch } from "@/lib/ssrf";
 import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { writeFileBytes } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,8 +31,8 @@ const MAX_BYTES = 200 * 1024 * 1024;
 export async function POST(request: Request) {
   try {
     const body = BodySchema.parse(await request.json());
-    const wsId = body.workspace_id ?? defaultWorkspaceId();
-    const ctx = requireContext(request, wsId);
+    const wsId = body.workspace_id ?? (await defaultWorkspaceId());
+    const ctx = await requireContext(request, wsId);
     requireContributor(ctx);
 
     // Blocker #4: uploads trigger OCR/embedding compute — throttle per user.
@@ -62,9 +61,9 @@ export async function POST(request: Request) {
     }
 
     const hash = createHash("sha256").update(buffer).digest("hex");
-    const existing = findDocumentByHash(hash, wsId);
+    const existing = await findDocumentByHash(hash, wsId);
     if (existing) {
-      const { storage_path: _sp, ...safeExisting } = getDocument(existing.id)!;
+      const { storage_path: _sp, ...safeExisting } = (await getDocument(existing.id))!;
       return NextResponse.json({ ...safeExisting, already_ingested: true }, { status: 200 });
     }
 
@@ -73,11 +72,10 @@ export async function POST(request: Request) {
     const filename = derivedName.toLowerCase().endsWith(".pdf") ? derivedName : `${derivedName}.pdf`;
 
     const id = "doc_" + randomUUID();
-    mkdirSync(uploadsDir(), { recursive: true });
     const storagePath = path.join(uploadsDir(), `${id}.pdf`);
-    await writeFile(storagePath, buffer);
+    await writeFileBytes(storagePath, buffer);
 
-    insertDocument({
+    await insertDocument({
       id,
       workspace_id: wsId,
       owner_id: ctx.userId,
@@ -89,10 +87,10 @@ export async function POST(request: Request) {
       ocr_warning: false,
       error: null,
     });
-    enqueueIngestion(id);
-    audit.write(wsId, ctx.userId, "document.uploaded", "document", id, null, { filename, source_url: body.url });
+    await enqueueIngestion(id);
+    await audit.write(wsId, ctx.userId, "document.uploaded", "document", id, null, { filename, source_url: body.url });
 
-    const { storage_path: _sp, ...safe } = getDocument(id)!;
+    const { storage_path: _sp, ...safe } = (await getDocument(id))!;
     return NextResponse.json(safe, { status: 202 });
   } catch (err) {
     return apiError(err);

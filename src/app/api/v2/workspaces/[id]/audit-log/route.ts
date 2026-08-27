@@ -14,14 +14,14 @@ type Params = { params: Promise<{ id: string }> };
 export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
 
     const url = new URL(request.url);
     const format = (url.searchParams.get("format") ?? "json").toLowerCase();
     const limit = Math.min(Number(url.searchParams.get("limit") ?? 1000) || 1000, 5000);
 
-    const entries = audit.list(id, limit);
+    const entries = await audit.list(id, limit);
 
     if (format === "csv") {
       const csv = audit.toCsv(entries);

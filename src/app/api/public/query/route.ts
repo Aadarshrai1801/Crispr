@@ -25,7 +25,7 @@ const BodySchema = z.object({
  */
 export async function POST(request: Request) {
   try {
-    const ctx = authenticateApiKey(request);
+    const ctx = await authenticateApiKey(request);
     requireScope(ctx, "query");
 
     // Blocker #4: public API keys can burn Groq budget — hard per-key cap.
@@ -35,18 +35,21 @@ export async function POST(request: Request) {
     const body = BodySchema.parse(await request.json());
     const wsId = ctx.workspace_id;
 
-    let requested = body.workspace_wide ? readyDocumentIds(wsId) : (body.document_ids ?? []);
-    if (!requested.length && !body.workspace_wide) requested = readyDocumentIds(wsId);
+    let requested = body.workspace_wide ? await readyDocumentIds(wsId) : (body.document_ids ?? []);
+    if (!requested.length && !body.workspace_wide) requested = await readyDocumentIds(wsId);
 
-    const owned = new Set(listDocuments(wsId).map((d) => d.id));
+    const owned = new Set((await listDocuments(wsId)).map((d) => d.id));
     requested = requested.filter((id) => owned.has(id));
 
-    const readyDocs = requested.filter((id) => getDocument(id)?.status === "ready");
+    const readyDocs = [];
+    for (const id of requested) {
+      if ((await getDocument(id))?.status === "ready") readyDocs.push(id);
+    }
     if (!readyDocs.length) {
       return NextResponse.json({ error: "No ready documents available in this workspace." }, { status: 409 });
     }
 
-    const scope = resolveQueryScope(readyDocs, wsId);
+    const scope = await resolveQueryScope(readyDocs, wsId);
     const result = await answerQuestion({
       workspaceId: wsId,
       userId: `apikey:${ctx.key.id}`,

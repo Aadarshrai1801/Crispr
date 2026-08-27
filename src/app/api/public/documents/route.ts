@@ -19,7 +19,7 @@ const MAX_BYTES = 200 * 1024 * 1024;
 /** FR-46 public API: multipart document upload under the API key's workspace. */
 export async function POST(request: Request) {
   try {
-    const ctx = authenticateApiKey(request);
+    const ctx = await authenticateApiKey(request);
     requireScope(ctx, "write");
 
     const limit = checkRateLimit(`write:apikey:${ctx.key.id}`, "write");
@@ -35,9 +35,9 @@ export async function POST(request: Request) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const hash = createHash("sha256").update(buffer).digest("hex");
-    const existing = findDocumentByHash(hash, ctx.workspace_id);
+    const existing = await findDocumentByHash(hash, ctx.workspace_id);
     if (existing) {
-      const { storage_path: _sp, ...safeExisting } = getDocument(existing.id)!;
+      const { storage_path: _sp, ...safeExisting } = (await getDocument(existing.id))!;
       return NextResponse.json({ ...safeExisting, already_ingested: true }, { status: 409 });
     }
 
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
     const storagePath = path.join(uploadsDir(), `${id}${ext}`);
     await writeFile(storagePath, buffer);
 
-    insertDocument({
+    await insertDocument({
       id,
       workspace_id: ctx.workspace_id,
       owner_id: `apikey:${ctx.key.id}`,
@@ -61,7 +61,7 @@ export async function POST(request: Request) {
     });
     enqueueIngestion(id);
 
-    const { storage_path: _sp, ...safe } = getDocument(id)!;
+    const { storage_path: _sp, ...safe } = (await getDocument(id))!;
     return NextResponse.json(safe, { status: 202 });
   } catch (err) {
     if (err instanceof ApiKeyError) return NextResponse.json({ error: err.message }, { status: err.status });

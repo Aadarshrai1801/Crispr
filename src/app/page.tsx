@@ -6,13 +6,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowBendDoubleUpLeft,
   ArrowRight,
+  ChatsCircle,
   FileText,
   Gear,
   PaperPlaneRight,
+  Plus,
   SealCheck,
+  Trash,
 } from "@phosphor-icons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { api, type CitationDto, type QueryResultDto } from "@/lib/client/api";
+import { api, type ChatSessionDto, type CitationDto, type QueryResultDto } from "@/lib/client/api";
 import { useActiveDocuments } from "@/lib/client/use-active-documents";
 import type { DocumentDto } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
@@ -27,11 +30,6 @@ import { cn } from "@/lib/utils";
 const PdfViewer = dynamic(() => import("@/components/chat/pdf-viewer"), { ssr: false });
 
 const MAX_RETRIES = 2;
-const EXAMPLES = [
-  "What are the key obligations defined in this document?",
-  "Summarize the limitations or exclusions mentioned.",
-  "What dates and deadlines does this document specify?",
-];
 
 interface Turn {
   id: string;
@@ -56,6 +54,12 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const [allDocsMode, setAllDocsMode] = useState(false);
 
+  // Persistent chat sessions (Phase 1): resumable history stored server-side.
+  const [sessions, setSessions] = useState<ChatSessionDto[]>([]);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [chatsOpen, setChatsOpen] = useState(false);
+
   const [feedbackTarget, setFeedbackTarget] = useState<{ turnId: string; result: QueryResultDto } | null>(null);
   const [correctionDraft, setCorrectionDraft] = useState<(CorrectionDraft & { exhausted?: boolean }) | null>(null);
 
@@ -65,10 +69,35 @@ export default function ChatPage() {
   const [confirmedUp, setConfirmedUp] = useState<Record<string, boolean>>({});
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const chatsRef = useRef<HTMLDivElement>(null);
   const reduce = useReducedMotion();
 
   useEffect(() => {
     void api.listDocuments().then(setDocs).catch(() => setDocs([]));
+  }, []);
+
+  // Load persistent chat sessions once. Resume the most recent one, or one
+  // addressed explicitly via ?session=<id> (e.g. from the session list).
+  useEffect(() => {
+    (async () => {
+      try {
+        const { sessions: list } = await api.listChatSessions();
+        setSessions(list);
+        const paramId = new URLSearchParams(window.location.search).get("session");
+        const target = paramId ? list.find((s) => s.id === paramId) : list[0];
+        if (target) {
+          const loaded = await loadSession(target.id);
+          if (loaded && paramId) {
+            window.history.replaceState({}, "", window.location.pathname);
+          }
+        }
+      } catch {
+        /* unauthenticated or offline — keep blank state */
+      } finally {
+        setSessionsLoaded(true);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const readyDocs = useMemo(() => docs?.filter((d) => d.status === "ready") ?? [], [docs]);
@@ -96,6 +125,23 @@ export default function ChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: reduce ? "auto" : "smooth" });
   }, [turns, busy, reduce]);
 
+  // Close the sessions dropdown on outside click / Escape.
+  useEffect(() => {
+    if (!chatsOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (chatsRef.current && !chatsRef.current.contains(e.target as Node)) setChatsOpen(false);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setChatsOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [chatsOpen]);
+
   // Phase ticker during generation
   useEffect(() => {
     if (!busy) return;
@@ -117,6 +163,97 @@ export default function ChatPage() {
     setTurns((ts) => ts.map((t) => (t.id === turnId ? fn(t) : t)));
   }, []);
 
+  // --- Persistent chat sessions (Phase 1) ---
+
+  function messagesToTurns(messages: Array<{ role: "user" | "assistant"; content: unknown; id: string }>): Turn[] {
+    const out: Turn[] = [];
+    let cur: Turn | null = null;
+    for (const m of messages) {
+      const c = m.content as { question?: string; result?: QueryResultDto };
+      if (m.role === "user") {
+        cur = { id: m.id, question: typeof c?.question === "string" ? c.question : "", variants: [] };
+        out.push(cur);
+      } else if (c?.result) {
+        if (!cur) {
+          cur = { id: m.id, question: "", variants: [] };
+          out.push(cur);
+        }
+        cur.variants.push(c.result);
+      }
+    }
+    return out;
+  }
+
+  const reloadSessions = useCallback(async () => {
+    try {
+      const { sessions: list } = await api.listChatSessions();
+      setSessions(list);
+      return list;
+    } catch {
+      return sessions;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadSession = useCallback(
+    async (id: string) => {
+      try {
+        const { session } = await api.getChatSession(id);
+        setTurns(messagesToTurns(session.messages));
+        // Reflect the active document scope captured in the session.
+        const sessionDocIds = session.document_ids;
+        if (sessionDocIds.length) {
+          setAllDocsMode(false);
+          setActiveIds(sessionDocIds);
+        }
+        setActiveSessionId(session.id);
+        setError(null);
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not load chat");
+        return false;
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  const newChat = useCallback(() => {
+    setTurns([]);
+    setActiveSessionId(null);
+    setError(null);
+    if (window.location.search) window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
+  // Ensure an active session exists before persisting (auto-create on first ask).
+  const resolveSessionId = useCallback(async (): Promise<string | null> => {
+    if (activeSessionId) return activeSessionId;
+    try {
+      const { session } = await api.createChatSession({
+        title: "New chat",
+        document_ids: allDocsMode ? readyDocs.map((d) => d.id) : activeReadyIds,
+      });
+      setSessions((list) => [session, ...list]);
+      setActiveSessionId(session.id);
+      return session.id;
+    } catch {
+      return null;
+    }
+  }, [activeSessionId, allDocsMode, readyDocs, activeReadyIds]);
+
+  const persistTurn = useCallback(
+    async (sessionId: string, messages: Array<{ role: "user" | "assistant"; content: unknown; query_log_id?: string | null }>) => {
+      try {
+        await api.appendChatMessages(sessionId, messages);
+        const list = await reloadSessions();
+        void list;
+      } catch {
+        // Persistence is best-effort during a session; don't block the composer.
+      }
+    },
+    [reloadSessions]
+  );
+
   async function ask(question: string) {
     if (queryDocCount === 0 || busy) return;
     setInput("");
@@ -129,7 +266,16 @@ export default function ChatPage() {
         : await api.ask(question, activeReadyIds);
       // Cached answers reuse the server's query_log_id, so the turn key must be
       // locally unique rather than derived from it.
-      setTurns((ts) => [...ts, { id: crypto.randomUUID(), question, variants: [result] }]);
+      const turnId = crypto.randomUUID();
+      setTurns((ts) => [...ts, { id: turnId, question, variants: [result] }]);
+      // Persist the turn into a durable session (auto-created on first ask).
+      const sessionId = await resolveSessionId();
+      if (sessionId) {
+        void persistTurn(sessionId, [
+          { role: "user", content: { question } },
+          { role: "assistant", content: { result }, query_log_id: result.query_log_id },
+        ]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -144,6 +290,12 @@ export default function ChatPage() {
     try {
       const result = await api.retry(sourceVariant.query_log_id);
       updateTurn(turnId, (t) => ({ ...t, variants: [...t.variants, result] }));
+      // Persist the retry as another assistant message within the active session.
+      if (activeSessionId) {
+        void persistTurn(activeSessionId, [
+          { role: "assistant", content: { result }, query_log_id: result.query_log_id },
+        ]);
+      }
     } catch (err) {
       const e = err as Error & { status?: number };
       if (e.status === 409) {
@@ -283,9 +435,86 @@ export default function ChatPage() {
             )}
           </>
         )}
-        <Button variant="ghost" size="sm" onClick={() => (window.location.href = "/documents")} className="ml-auto hidden shrink-0 sm:inline-flex">
-          <Gear size={13} weight="light" /> Manage
-        </Button>
+        <div className="relative ml-auto flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setChatsOpen((v) => !v);
+              void reloadSessions();
+            }}
+            aria-expanded={chatsOpen}
+            className="hidden shrink-0 sm:inline-flex"
+          >
+            <ChatsCircle size={13} weight={activeSessionId ? "fill" : "regular"} /> Chats
+            {sessions.length > 0 && (
+              <span className="ml-0.5 rounded-md border border-line px-1 font-mono text-[9px] text-ink-faint">{sessions.length}</span>
+            )}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => (window.location.href = "/documents")} className="hidden shrink-0 sm:inline-flex">
+            <Gear size={13} weight="light" /> Manage
+          </Button>
+
+          {chatsOpen && (
+            <div ref={chatsRef} className="absolute right-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-xl border border-line bg-surface shadow-[var(--shadow-card)]">
+              <div className="flex items-center justify-between border-b border-line px-3 py-2">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-ink-faint">Recent chats</span>
+                <button
+                  onClick={() => {
+                    newChat();
+                    setChatsOpen(false);
+                  }}
+                  className="focus-ring inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-accent hover:bg-accent-soft"
+                >
+                  <Plus size={12} weight="bold" /> New chat
+                </button>
+              </div>
+              <div className="max-h-[42vh] overflow-y-auto">
+                {!sessionsLoaded ? (
+                  <p className="px-3 py-4 text-xs text-ink-faint">Loading…</p>
+                ) : sessions.length === 0 ? (
+                  <p className="px-3 py-4 text-xs text-ink-faint">No saved chats yet — your questions are saved automatically.</p>
+                ) : (
+                  sessions.map((s) => (
+                    <div
+                      key={s.id}
+                      className={cn(
+                        "flex items-center gap-1 border-b border-line last:border-b-0",
+                        s.id === activeSessionId && "bg-accent-soft"
+                      )}
+                    >
+                      <button
+                        onClick={() => {
+                          setChatsOpen(false);
+                          void loadSession(s.id);
+                        }}
+                        className="focus-ring min-w-0 flex-1 px-3 py-2 text-left hover:bg-surface-hover"
+                      >
+                        <span className="block truncate text-[13px] text-ink">{s.title || "New chat"}</span>
+                        <span className="block font-mono text-[9px] uppercase tracking-wider text-ink-faint">
+                          {s.message_count} message{s.message_count === 1 ? "" : "s"}
+                        </span>
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const ok = await api.deleteChatSession(s.id).catch(() => undefined);
+                          if (ok) {
+                            setSessions((list) => list.filter((x) => x.id !== s.id));
+                            if (activeSessionId === s.id) newChat();
+                          }
+                        }}
+                        className="focus-ring mr-1 rounded-md p-1.5 text-ink-faint transition-colors hover:bg-danger-soft hover:text-danger"
+                        aria-label={`Delete chat ${s.title}`}
+                      >
+                        <Trash size={13} weight="light" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -308,7 +537,7 @@ export default function ChatPage() {
                     Crispr retries with a different strategy, or saves your fix permanently.
                   </p>
 
-                  {readyDocs.length === 0 && docs !== null ? (
+                  {readyDocs.length === 0 && docs !== null && (
                     <EmptyState
                       icon={<FileText size={20} weight="light" />}
                       title={docs.length === 0 ? "No documents yet" : "Still processing"}
@@ -323,21 +552,6 @@ export default function ChatPage() {
                         </Button>
                       }
                     />
-                  ) : (
-                    <div className="mt-8 grid gap-2">
-                      <p className="font-mono text-[10px] uppercase tracking-wider text-ink-faint">Try asking</p>
-                      {EXAMPLES.map((ex) => (
-                        <button
-                          key={ex}
-                          onClick={() => void ask(ex)}
-                          disabled={!queryDocCount}
-                          className="focus-ring group flex items-center justify-between gap-3 rounded-xl border border-line bg-surface px-3.5 py-2.5 text-left text-[13px] text-ink-soft transition-all duration-200 hover:border-accent-line hover:text-ink disabled:opacity-40"
-                        >
-                          {ex}
-                          <ArrowRight size={13} weight="bold" className="shrink-0 opacity-0 transition-opacity duration-200 group-hover:opacity-60" />
-                        </button>
-                      ))}
-                    </div>
                   )}
                 </div>
               )

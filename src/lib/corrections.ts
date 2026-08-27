@@ -75,7 +75,7 @@ export async function detectConflict(workspaceId: string, documentIds: string[],
   const vector = await embedOne(questionText);
   const hits = await searchCorrections(vector, workspaceId, documentIds, config.correctionConflictThreshold);
   for (const hit of hits) {
-    const existing = getCorrection(hit.id);
+    const existing = await getCorrection(hit.id);
     if (existing && isLive(existing)) return existing;
   }
   return null;
@@ -87,11 +87,11 @@ export async function detectConflict(workspaceId: string, documentIds: string[],
  * invisible to retrieval (and to other users) until an Approver/Admin approves.
  */
 export async function submitCorrection(input: SubmitCorrectionInput): Promise<SubmitCorrectionResult> {
-  const log = getQueryLog(input.query_log_id);
+  const log = await getQueryLog(input.query_log_id);
   if (!log) throw new Error("Original query log not found");
 
   const actorId = input.actor_id ?? log.user_id;
-  const workspace = getWorkspace(log.workspace_id);
+  const workspace = await getWorkspace(log.workspace_id);
   void workspace;
 
   const documentIds = JSON.parse(log.document_ids) as string[];
@@ -110,16 +110,16 @@ export async function submitCorrection(input: SubmitCorrectionInput): Promise<Su
   if (input.resolve === "replace") {
     const existing = await detectConflict(log.workspace_id, documentIds, log.question_text);
     if (existing) {
-      setCorrectionStatus(existing.id, "superseded");
+      await setCorrectionStatus(existing.id, "superseded");
       await removeFromIndex(existing.id);
       supersedesId = existing.id;
-      audit.write(log.workspace_id, actorId, "correction.edited", "correction", existing.id, { status: existing.status }, { status: "superseded", replaced_by_intent: true });
+      await audit.write(log.workspace_id, actorId, "correction.edited", "correction", existing.id, { status: existing.status }, { status: "superseded", replaced_by_intent: true });
     }
   }
 
   const status: CorrectionRow["status"] = canApprove(input.submitter_role) ? "active" : "pending";
 
-  const correction = insertCorrection({
+  const correction = await insertCorrection({
     workspace_id: log.workspace_id,
     document_id: documentId,
     original_query_log_id: log.id,
@@ -140,7 +140,7 @@ export async function submitCorrection(input: SubmitCorrectionInput): Promise<Su
     await syncIndexRow(correction);
   }
 
-  audit.write(
+  await audit.write(
     log.workspace_id,
     actorId,
     "correction.submitted",
@@ -150,7 +150,7 @@ export async function submitCorrection(input: SubmitCorrectionInput): Promise<Su
     { status, question: correction.question_text, corrected_answer: correction.corrected_answer_text, scope, document_id: documentId }
   );
 
-  dispatchWebhook("correction.submitted", log.workspace_id, {
+  await dispatchWebhook("correction.submitted", log.workspace_id, {
     correction_id: correction.id,
     status,
     question: correction.question_text,
@@ -179,7 +179,7 @@ export class ApprovalError extends Error {
  * until the approver explicitly chooses to supersede.
  */
 export async function approveCorrection(id: string, approverId: string, opts?: { supersedeExisting?: boolean }): Promise<CorrectionRow> {
-  const correction = getCorrection(id);
+  const correction = await getCorrection(id);
   if (!correction) throw new ApprovalError("Correction not found", 404);
   if (correction.status !== "pending") throw new ApprovalError(`Only pending corrections can be approved (current: ${correction.status}).`, 409);
 
@@ -195,23 +195,23 @@ export async function approveCorrection(id: string, approverId: string, opts?: {
 
   let supersededId: string | null = null;
   if (conflictingActive && conflictingActive.id !== id && opts?.supersedeExisting) {
-    setCorrectionStatus(conflictingActive.id, "superseded", id);
+    await setCorrectionStatus(conflictingActive.id, "superseded", id);
     await removeFromIndex(conflictingActive.id);
     supersededId = conflictingActive.id;
-    audit.write(correction.workspace_id, approverId, "correction.superseded", "correction", conflictingActive.id, { status: "active" }, { status: "superseded", superseded_by: id });
+    await audit.write(correction.workspace_id, approverId, "correction.superseded", "correction", conflictingActive.id, { status: "active" }, { status: "superseded", superseded_by: id });
   }
 
-  setCorrectionStatus(id, "active", supersededId ?? undefined, { approved_by: approverId });
-  const updated = getCorrection(id)!;
+  await setCorrectionStatus(id, "active", supersededId ?? undefined, { approved_by: approverId });
+  const updated = (await getCorrection(id))!;
   await syncIndexRow(updated); // enters the override layer for ALL workspace members instantly (FR-32)
 
-  audit.write(correction.workspace_id, approverId, "correction.approved", "correction", id, { status: "pending" }, {
+  await audit.write(correction.workspace_id, approverId, "correction.approved", "correction", id, { status: "pending" }, {
     status: "active",
     approved_by: approverId,
     superseded: supersededId,
   });
 
-  dispatchWebhook("correction.approved", correction.workspace_id, {
+  await dispatchWebhook("correction.approved", correction.workspace_id, {
     correction_id: id,
     approved_by: approverId,
     question: updated.question_text,
@@ -221,21 +221,21 @@ export async function approveCorrection(id: string, approverId: string, opts?: {
 }
 
 export async function rejectCorrection(id: string, rejectorId: string, reason: string): Promise<CorrectionRow> {
-  const correction = getCorrection(id);
+  const correction = await getCorrection(id);
   if (!correction) throw new ApprovalError("Correction not found", 404);
   if (correction.status !== "pending") throw new ApprovalError(`Only pending corrections can be rejected (current: ${correction.status}).`, 409);
 
-  setCorrectionStatus(id, "rejected", undefined, { rejection_reason: reason });
-  const updated = getCorrection(id)!;
+  await setCorrectionStatus(id, "rejected", undefined, { rejection_reason: reason });
+  const updated = (await getCorrection(id))!;
   await removeFromIndex(id);
 
-  audit.write(correction.workspace_id, rejectorId, "correction.rejected", "correction", id, { status: "pending" }, {
+  await audit.write(correction.workspace_id, rejectorId, "correction.rejected", "correction", id, { status: "pending" }, {
     status: "rejected",
     rejected_by: rejectorId,
     reason,
   });
 
-  dispatchWebhook("correction.rejected", correction.workspace_id, {
+  await dispatchWebhook("correction.rejected", correction.workspace_id, {
     correction_id: id,
     rejected_by: rejectorId,
     reason,
@@ -248,26 +248,26 @@ export function canApprove(role: WorkspaceRole | null | undefined): boolean {
   return role === "Admin" || role === "Approver";
 }
 
-export function pendingCount(workspaceId: string): number {
-  return listPendingCorrections(workspaceId).length;
+export async function pendingCount(workspaceId: string): Promise<number> {
+  return (await listPendingCorrections(workspaceId)).length;
 }
 
 export async function editCorrection(
   id: string,
   fields: { question_text?: string; corrected_answer_text?: string; note?: string | null; topic_tags?: string[]; scope?: "document" | "workspace"; document_id?: string | null; actor_id?: string }
 ): Promise<CorrectionRow> {
-  const existing = getCorrection(id);
+  const existing = await getCorrection(id);
   if (!existing) throw new Error("Correction not found");
 
-  updateCorrectionText(id, fields);
-  if (fields.scope) updateCorrectionScope(id, fields.scope, fields.scope === "workspace" ? null : (fields.document_id ?? existing.document_id));
+  await updateCorrectionText(id, fields);
+  if (fields.scope) await updateCorrectionScope(id, fields.scope, fields.scope === "workspace" ? null : (fields.document_id ?? existing.document_id));
 
-  const updated = getCorrection(id)!;
+  const updated = (await getCorrection(id))!;
   if (isLive(updated)) {
     await syncIndexRow(updated);
   }
 
-  audit.write(existing.workspace_id, fields.actor_id ?? existing.submitted_by, "correction.edited", "correction", id,
+  await audit.write(existing.workspace_id, fields.actor_id ?? existing.submitted_by, "correction.edited", "correction", id,
     { question_text: existing.question_text, corrected_answer_text: existing.corrected_answer_text, note: existing.note },
     { question_text: updated.question_text, corrected_answer_text: updated.corrected_answer_text, note: updated.note });
   return updated;
@@ -283,17 +283,17 @@ export async function proposeCorrectionEdit(
   fields: PendingEditPayload,
   actorId: string
 ): Promise<CorrectionRow> {
-  const existing = getCorrection(id);
+  const existing = await getCorrection(id);
   if (!existing) throw new ApprovalError("Correction not found", 404);
   if (existing.status !== "active") {
     throw new ApprovalError(`Only active corrections can be edited (current: ${existing.status}).`, 409);
   }
 
-  setPendingEdit(id, fields, actorId);
-  audit.write(existing.workspace_id, actorId, "correction.edit_proposed", "correction", id,
+  await setPendingEdit(id, fields, actorId);
+  await audit.write(existing.workspace_id, actorId, "correction.edit_proposed", "correction", id,
     { question_text: existing.question_text, corrected_answer_text: existing.corrected_answer_text, note: existing.note },
     fields as unknown as Record<string, unknown>);
-  return getCorrection(id)!;
+  return (await getCorrection(id))!;
 }
 
 /** Approver/Admin decision on a proposed edit. Previous answer remains live until acceptance. */
@@ -303,56 +303,56 @@ export async function reviewCorrectionEdit(
   reviewerId: string,
   reason?: string
 ): Promise<CorrectionRow> {
-  const existing = getCorrection(id);
+  const existing = await getCorrection(id);
   if (!existing) throw new ApprovalError("Correction not found", 404);
   if (!existing.pending_edit) {
     throw new ApprovalError("This correction has no pending edit proposal.", 409);
   }
 
   const proposed = JSON.parse(existing.pending_edit) as PendingEditPayload;
-  setPendingEdit(id, null, null);
+  await setPendingEdit(id, null, null);
 
   if (decision === "accept") {
     await updateFromProposal(existing, proposed);
-    const updated = getCorrection(id)!;
-    audit.write(existing.workspace_id, reviewerId, "correction.edit_approved", "correction", id,
+    const updated = (await getCorrection(id))!;
+    await audit.write(existing.workspace_id, reviewerId, "correction.edit_approved", "correction", id,
       { question_text: existing.question_text, corrected_answer_text: existing.corrected_answer_text, note: existing.note },
       { question_text: updated.question_text, corrected_answer_text: updated.corrected_answer_text, note: updated.note, proposed_by: existing.pending_edit_by });
     return updated;
   }
 
-  audit.write(existing.workspace_id, reviewerId, "correction.edit_rejected", "correction", id,
+  await audit.write(existing.workspace_id, reviewerId, "correction.edit_rejected", "correction", id,
     proposed as unknown as Record<string, unknown>,
     { reason: reason ?? null, proposed_by: existing.pending_edit_by });
-  return getCorrection(id)!;
+  return (await getCorrection(id))!;
 }
 
 async function updateFromProposal(current: CorrectionRow, proposed: PendingEditPayload): Promise<void> {
-  updateCorrectionText(current.id, proposed);
+  await updateCorrectionText(current.id, proposed);
   if (proposed.scope) {
-    updateCorrectionScope(current.id, proposed.scope, proposed.scope === "workspace" ? null : (proposed.document_id ?? current.document_id));
+    await updateCorrectionScope(current.id, proposed.scope, proposed.scope === "workspace" ? null : (proposed.document_id ?? current.document_id));
   }
-  const updated = getCorrection(current.id)!;
+  const updated = (await getCorrection(current.id))!;
   if (isLive(updated)) await syncIndexRow(updated);
 }
 
 export async function retireCorrection(id: string, actorId?: string): Promise<CorrectionRow> {
-  const existing = getCorrection(id);
+  const existing = await getCorrection(id);
   if (!existing) throw new Error("Correction not found");
-  setCorrectionStatus(id, "retired");
+  await setCorrectionStatus(id, "retired");
   await removeFromIndex(id);
-  audit.write(existing.workspace_id, actorId ?? existing.submitted_by, "correction.retired", "correction", id, { status: existing.status }, { status: "retired" });
-  return getCorrection(id)!;
+  await audit.write(existing.workspace_id, actorId ?? existing.submitted_by, "correction.retired", "correction", id, { status: existing.status }, { status: "retired" });
+  return (await getCorrection(id))!;
 }
 
 /** Walks the supersede chain backwards for audit history (FR-26). */
-export function correctionHistory(id: string): CorrectionRow[] {
+export async function correctionHistory(id: string): Promise<CorrectionRow[]> {
   const chain: CorrectionRow[] = [];
   const seen = new Set<string>();
   let current: string | null | undefined = id;
   while (current && !seen.has(current)) {
     seen.add(current);
-    const row = getCorrection(current);
+    const row = await getCorrection(current);
     if (!row) break;
     chain.push(row);
     current = row.supersedes_correction_id;
@@ -360,7 +360,7 @@ export function correctionHistory(id: string): CorrectionRow[] {
   return chain;
 }
 
-export function activeCorrections(workspaceId: string, documentIds: string[]) {
+export async function activeCorrections(workspaceId: string, documentIds: string[]) {
   return listActiveCorrectionsForDocs(workspaceId, documentIds);
 }
 
@@ -384,7 +384,7 @@ export async function createCorrectionFromSuggestion(input: {
   // Role-gated: only Admin/Approver acceptances go live immediately.
   const status: CorrectionRow["status"] = canApprove(input.submitter_role) ? "active" : "pending";
 
-  const correction = insertCorrection({
+  const correction = await insertCorrection({
     workspace_id: input.workspace_id,
     document_id: input.document_id,
     original_query_log_id: input.original_query_log_id,
@@ -402,12 +402,12 @@ export async function createCorrectionFromSuggestion(input: {
 
   if (isLive(correction)) await syncIndexRow(correction);
 
-  audit.write(input.workspace_id, input.submitted_by, "suggestion.accepted", "correction", correction.id, null, {
+  await audit.write(input.workspace_id, input.submitted_by, "suggestion.accepted", "correction", correction.id, null, {
     suggestion_id: input.suggested_correction_id,
     status,
     question: input.question_text,
   });
-  dispatchWebhook("correction.submitted", input.workspace_id, {
+  await dispatchWebhook("correction.submitted", input.workspace_id, {
     correction_id: correction.id,
     status,
     from_suggestion: input.suggested_correction_id,

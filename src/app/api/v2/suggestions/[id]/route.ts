@@ -20,9 +20,9 @@ export async function POST(request: Request, { params }: Params) {
   try {
     const { id } = await params;
     const body = BodySchema.parse(await request.json());
-    const suggestion = getSuggestedCorrection(id);
+    const suggestion = await getSuggestedCorrection(id);
     if (!suggestion) return json({ error: "Suggestion not found" }, 404);
-    const ctx = requireContext(request, suggestion.workspace_id);
+    const ctx = await requireContext(request, suggestion.workspace_id);
     requireApprover(ctx);
 
     if (body.action === "dismiss") {
@@ -48,9 +48,9 @@ export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = await params;
     void getCorrection;
-    const suggestion = getSuggestedCorrection(id);
+    const suggestion = await getSuggestedCorrection(id);
     if (!suggestion) return json({ error: "Suggestion not found" }, 404);
-    requireContext(request, suggestion.workspace_id);
+    await requireContext(request, suggestion.workspace_id);
     return json({ suggestion });
   } catch (err) {
     return apiError(err);

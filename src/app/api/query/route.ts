@@ -23,7 +23,7 @@ export async function POST(request: Request) {
   try {
     const body = BodySchema.parse(await request.json());
     const wsId =
-      request.headers.get("x-crisp-workspace-id") ?? new URL(request.url).searchParams.get("workspace_id") ?? defaultWorkspaceId();
+      request.headers.get("x-crisp-workspace-id") ?? new URL(request.url).searchParams.get("workspace_id") ?? (await defaultWorkspaceId());
 
     // FR-34: any member (including Viewer) can query documents. Identity now
     // comes from the session cookie (blocker #1) — headers are untrusted.
@@ -32,14 +32,17 @@ export async function POST(request: Request) {
     const limit = checkRateLimit(`query:${ctx.userId}`, "llmQuery");
     if (!limit.ok) return rateLimitResponse(limit);
 
-    let requested = body.workspace_wide ? readyDocumentIds(wsId) : (body.document_ids ?? []);
+    let requested = body.workspace_wide ? await readyDocumentIds(wsId) : (body.document_ids ?? []);
     if (!body.workspace_wide) {
       // Scope guard: only allow querying documents that belong to this workspace.
-      const owned = new Set(listDocuments(wsId).map((d) => d.id));
+      const owned = new Set((await listDocuments(wsId)).map((d) => d.id));
       requested = requested.filter((id) => owned.has(id));
     }
 
-    const readyDocs = requested.filter((id) => getDocument(id)?.status === "ready");
+    const readyDocs: string[] = [];
+    for (const id of requested) {
+      if ((await getDocument(id))?.status === "ready") readyDocs.push(id);
+    }
     if (!readyDocs.length) {
       return NextResponse.json(
         { error: "None of the selected documents are ready yet. Wait for processing to finish." },
@@ -48,7 +51,7 @@ export async function POST(request: Request) {
     }
 
     // PRD non-functional requirement: degrade gracefully beyond 50 docs.
-    const scope = resolveQueryScope(readyDocs, wsId);
+    const scope = await resolveQueryScope(readyDocs, wsId);
 
     const payload = await answerQuestion({
       workspaceId: wsId,

@@ -45,35 +45,35 @@ describe("cookie parsing", () => {
 describe("SQLite-backed sessions", () => {
   const ownerEmail = "local@crispai.app";
 
-  it("creates, resolves, and expires sessions by token", () => {
-    const user = getUserByEmail(ownerEmail)!;
+  it("creates, resolves, and expires sessions by token", async () => {
+    const user = (await getUserByEmail(ownerEmail))!;
     expect(user).toBeDefined();
 
-    const { token } = createSession(user.id, 60_000);
-    const session = getSession(token);
+    const { token } = await createSession(user.id, 60_000);
+    const session = await getSession(token);
     expect(session?.user_id).toBe(user.id);
 
-    deleteSession(token);
-    expect(getSession(token)).toBeUndefined();
+    await deleteSession(token);
+    expect(await getSession(token)).toBeUndefined();
   });
 
-  it("does not return expired sessions", () => {
-    const user = getUserByEmail(ownerEmail)!;
-    const { token } = createSession(user.id, -1000); // already expired
-    expect(getSession(token)).toBeUndefined();
+  it("does not return expired sessions", async () => {
+    const user = (await getUserByEmail(ownerEmail))!;
+    const { token } = await createSession(user.id, -1000); // already expired
+    expect(await getSession(token)).toBeUndefined();
   });
 
-  it("requireAuthenticatedUser: valid cookie -> user; no/bad cookie -> 401", () => {
-    const user = getUserByEmail(ownerEmail)!;
-    const { token } = createSession(user.id, 60_000);
-    expect(requireAuthenticatedUser(requestWithCookie(token)).id).toBe(user.id);
+  it("requireAuthenticatedUser: valid cookie -> user; no/bad cookie -> 401", async () => {
+    const user = (await getUserByEmail(ownerEmail))!;
+    const { token } = await createSession(user.id, 60_000);
+    expect((await requireAuthenticatedUser(requestWithCookie(token))).id).toBe(user.id);
 
     for (const req of [
       new Request("http://localhost/api/test"), // no cookie at all
       requestWithCookie("forged-or-expired-token"),
     ]) {
       try {
-        requireAuthenticatedUser(req);
+        await requireAuthenticatedUser(req);
         throw new Error("expected 401");
       } catch (err) {
         expect(err).toBeInstanceOf(AuthzError);
@@ -82,12 +82,12 @@ describe("SQLite-backed sessions", () => {
     }
   });
 
-  it("the legacy x-crisp-user-id header grants nothing anymore", () => {
+  it("the legacy x-crisp-user-id header grants nothing anymore", async () => {
     const req = new Request("http://localhost/api/test", {
       headers: { "x-crisp-user-id": "user_marcus" },
     });
     try {
-      requireAuthenticatedUser(req);
+      await requireAuthenticatedUser(req);
       throw new Error("header spoof should fail");
     } catch (err) {
       expect(err).toBeInstanceOf(AuthzError);

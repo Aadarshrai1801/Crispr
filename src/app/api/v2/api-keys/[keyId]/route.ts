@@ -12,14 +12,14 @@ type Params = { params: Promise<{ keyId: string }> };
 export async function DELETE(request: Request, { params }: Params) {
   try {
     const { keyId } = await params;
-    const key = getApiKey(keyId);
+    const key = await getApiKey(keyId);
     if (!key) return json({ error: "API key not found" }, 404);
-    const ctx = requireContext(request, key.workspace_id);
+    const ctx = await requireContext(request, key.workspace_id);
     requireTier(ctx.workspace, "apiKeys");
     requireAdmin(ctx);
 
-    revokeApiKey(keyId);
-    audit.write(key.workspace_id, ctx.userId, "apikey.revoked", "api_key", keyId, { revoked_at: null }, { revoked: true });
+    await revokeApiKey(keyId);
+    await audit.write(key.workspace_id, ctx.userId, "apikey.revoked", "api_key", keyId, { revoked_at: null }, { revoked: true });
     return json({ ok: true });
   } catch (err) {
     return apiError(err);

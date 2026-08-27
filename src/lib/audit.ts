@@ -1,6 +1,6 @@
 import { appendAudit, listAuditEntries } from "./db";
 import { logger } from "./logger";
-import type { AuditActionType } from "./types";
+import type { AuditActionType, AuditLogEntryRow } from "./types";
 
 /**
  * FR-41: immutable, append-only audit trail for correction/approval activity.
@@ -8,7 +8,7 @@ import type { AuditActionType } from "./types";
  * the primary document store (PRD scalability note).
  */
 export const audit = {
-  write(
+  async write(
     workspaceId: string,
     actorId: string,
     action: AuditActionType,
@@ -18,7 +18,7 @@ export const audit = {
     after?: unknown
   ) {
     try {
-      return appendAudit({
+      return await appendAudit({
         workspace_id: workspaceId,
         actor_id: actorId,
         action_type: action,
@@ -38,7 +38,7 @@ export const audit = {
     return listAuditEntries(workspaceId, limit, offset);
   },
 
-  toCsv(entries: ReturnType<typeof listAuditEntries>): string {
+  toCsv(entries: AuditLogEntryRow[]): string {
     const header = "id,timestamp,actor_id,action_type,target_type,target_id,before_state,after_state";
     const escape = (v: unknown) => {
       const s = v === null || v === undefined ? "" : String(v);

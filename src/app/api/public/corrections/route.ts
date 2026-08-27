@@ -20,14 +20,14 @@ const SubmitSchema = z.object({
 /** FR-46 public API: submit a correction (goes through the workspace approval gate if enabled). */
 export async function POST(request: Request) {
   try {
-    const ctx = authenticateApiKey(request);
+    const ctx = await authenticateApiKey(request);
     requireScope(ctx, "write");
 
     const limit = checkRateLimit(`write:apikey:${ctx.key.id}`, "write");
     if (!limit.ok) return rateLimitResponse(limit);
 
     const body = SubmitSchema.parse(await request.json());
-    const log = getQueryLog(body.query_log_id);
+    const log = await getQueryLog(body.query_log_id);
     if (!log) return NextResponse.json({ error: "Query log not found" }, { status: 404 });
     if (log.workspace_id !== ctx.workspace_id) {
       return NextResponse.json({ error: "Query log belongs to another workspace." }, { status: 403 });

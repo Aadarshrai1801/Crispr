@@ -14,14 +14,14 @@ const BodySchema = z.object({
 
 export async function POST(request: Request) {
   const body = BodySchema.parse(await request.json());
-  const log = getQueryLog(body.query_log_id);
+  const log = await getQueryLog(body.query_log_id);
   if (!log) return NextResponse.json({ error: "Query log not found" }, { status: 404 });
 
-  setFeedbackStatus(body.query_log_id, body.verdict);
+  await setFeedbackStatus(body.query_log_id, body.verdict);
 
   // "Did this answer your question?" confirmations strengthen the served correction
   if (body.verdict === "confirmed_correct" && (log.correction_id || body.correction_id)) {
-    incrementCorrectionStats(log.correction_id ?? body.correction_id!, "confirmed_count");
+    await incrementCorrectionStats(log.correction_id ?? body.correction_id!, "confirmed_count");
   }
 
   // FR-51: a new flag may complete a repeated-question pattern — re-analyze (debounced).

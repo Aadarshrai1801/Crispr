@@ -23,7 +23,7 @@ const PatchSchema = z.object({
 
 export async function GET(request: Request, { params }: Params) {
   const { id } = await params;
-  const row = getCorrection(id);
+  const row = await getCorrection(id);
   if (!row) return NextResponse.json({ error: "Correction not found" }, { status: 404 });
   try {
     await requireContext(request, row.workspace_id);
@@ -31,11 +31,11 @@ export async function GET(request: Request, { params }: Params) {
     return apiError(err);
   }
   // Full lifecycle: version chain + every audited event touching those versions.
-  const chain = correctionHistory(id);
+  const chain = await correctionHistory(id);
   const chainIds = new Set(chain.map((c) => c.id));
   const { audit } = await import("@/lib/audit");
-  const events = audit
-    .list(row.workspace_id, 5000)
+  const events = (await audit
+    .list(row.workspace_id, 5000))
     .filter((e) => e.target_type === "correction" && chainIds.has(e.target_id))
     .reverse();
   return NextResponse.json({
@@ -51,11 +51,11 @@ export async function PATCH(request: Request, { params }: Params) {
   try {
     const { id } = await params;
     const body = PatchSchema.parse(await request.json());
-    const existing = getCorrection(id);
+    const existing = await getCorrection(id);
     if (!existing) return NextResponse.json({ error: "Correction not found" }, { status: 404 });
 
     // FR-34: editing requires Contributor+; every action is audited.
-    const ctx = requireContext(request, existing.workspace_id);
+    const ctx = await requireContext(request, existing.workspace_id);
     requireContributor(ctx);
 
     if (body.action === "retire") {
@@ -65,15 +65,15 @@ export async function PATCH(request: Request, { params }: Params) {
 
     if (body.action === "version_review_keep") {
       // FR-39 review outcome: correction still applies to the new version.
-      setNeedsVersionReview(id, false);
-      audit.write(existing.workspace_id, ctx.userId, "correction.edited", "correction", id, { needs_version_review: true }, { needs_version_review: false, review_outcome: "still_applies" });
-      return NextResponse.json(getCorrection(id));
+      await setNeedsVersionReview(id, false);
+      await audit.write(existing.workspace_id, ctx.userId, "correction.edited", "correction", id, { needs_version_review: true }, { needs_version_review: false, review_outcome: "still_applies" });
+      return NextResponse.json(await getCorrection(id));
     }
 
     if (body.action === "version_review_reflag") {
       // FR-39 review outcome: keep it live but annotate that it was re-flagged for the new version.
-      setNeedsVersionReview(id, false);
-      audit.write(existing.workspace_id, ctx.userId, "correction.edited", "correction", id, { needs_version_review: true }, { needs_version_review: false, review_outcome: "reflagged_note_added" });
+      await setNeedsVersionReview(id, false);
+      await audit.write(existing.workspace_id, ctx.userId, "correction.edited", "correction", id, { needs_version_review: true }, { needs_version_review: false, review_outcome: "reflagged_note_added" });
       const updated = await editCorrection(id, {
         note: `${existing.note ? existing.note + " · " : ""}Re-flagged after document version update`,
         actor_id: ctx.userId,

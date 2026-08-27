@@ -22,13 +22,13 @@ function sessionCookie(token: string, maxAgeSeconds: number): string {
 
 /** Builds the payload the client session store expects after a successful login. */
 async function sessionPayload(userId: string) {
-  const user = getUser(userId)!;
-  const workspaces = listWorkspacesForUser(userId);
+  const user = (await getUser(userId))!;
+  const workspaces = await listWorkspacesForUser(userId);
   return {
     user: { id: user.id, name: user.name, email: user.email },
     workspaces,
     workspaceId: workspaces[0]?.id ?? null,
-    role: workspaces.length ? getMembership(workspaces[0].id, userId)?.role ?? null : null,
+    role: workspaces.length ? (await getMembership(workspaces[0].id, userId))?.role ?? null : null,
     // Lets the client know whether the demo identity switcher is available.
     dev_impersonation: devImpersonationEnabled(),
   };
@@ -47,18 +47,18 @@ export async function POST(request: Request) {
         throw new AuthzError("Passwordless sign-in is disabled. Provide email and password.", 403);
       }
       // Dev convenience: accept id or email.
-      const user = getUser(body.user_id) ?? getUserByEmail(body.user_id);
+      const user = (await getUser(body.user_id)) ?? (await getUserByEmail(body.user_id));
       if (!user) throw new AuthzError("Unknown user.", 404);
       userId = user.id;
     } else {
-      const user = getUserByEmail(body.email);
+      const user = await getUserByEmail(body.email);
       if (!user || !verifyPassword(body.password, (user as { password_hash?: string }).password_hash)) {
         throw new AuthzError("Invalid email or password.", 401);
       }
       userId = user.id;
     }
 
-    const { token } = createSession(userId, SESSION_TTL_MS);
+    const { token } = await createSession(userId, SESSION_TTL_MS);
     const res = json(await sessionPayload(userId));
     res.headers.append("Set-Cookie", sessionCookie(token, Math.floor(SESSION_TTL_MS / 1000)));
     return res;

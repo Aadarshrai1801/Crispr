@@ -22,7 +22,7 @@ const PatchSchema = z.object({
 export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     return json({ workspace: ctx.workspace, role: ctx.role });
   } catch (err) {
     return apiError(err);
@@ -34,10 +34,10 @@ export async function PATCH(request: Request, { params }: Params) {
   try {
     const { id } = await params;
     const body = PatchSchema.parse(await request.json());
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
-    updateWorkspaceSettings(id, body);
-    audit.write(
+    await updateWorkspaceSettings(id, body);
+    await audit.write(
       id,
       ctx.userId,
       "workspace.updated",
@@ -52,7 +52,7 @@ export async function PATCH(request: Request, { params }: Params) {
       body
     );
     const { getWorkspace } = await import("@/lib/db");
-    return json({ workspace: getWorkspace(id) });
+    return json({ workspace: await getWorkspace(id) });
   } catch (err) {
     return apiError(err);
   }
@@ -66,13 +66,13 @@ export async function PATCH(request: Request, { params }: Params) {
 export async function DELETE(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
     if (id === "ws_default") {
       return json({ error: "The default workspace cannot be deleted." }, 403);
     }
 
-    const docs = listDocuments(id);
+    const docs = await listDocuments(id);
     for (const doc of docs) {
       await deleteVectorsForDocument(doc.id).catch(() => undefined);
       if (doc.storage_path) deleteDocumentFile(doc.storage_path);
@@ -83,15 +83,15 @@ export async function DELETE(request: Request, { params }: Params) {
         .catch(() => undefined);
     }
 
-    const corrections = listCorrections(id);
+    const corrections = await listCorrections(id);
     for (const c of corrections) {
       await removeCorrectionVector(c.id).catch(() => undefined);
     }
 
     // Audit before the cascade erases the trail — best-effort record elsewhere.
-    audit.write("ws_default", ctx.userId, "workspace.updated", "workspace", id, { name: ctx.workspace.name }, { deleted: true });
+    await audit.write("ws_default", ctx.userId, "workspace.updated", "workspace", id, { name: ctx.workspace.name }, { deleted: true });
 
-    deleteWorkspaceCascade(id);
+    await deleteWorkspaceCascade(id);
     return json({ ok: true });
   } catch (err) {
     return apiError(err);

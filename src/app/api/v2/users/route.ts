@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   try {
-    return json({ users: listUsers() });
+    return json({ users: await listUsers() });
   } catch (err) {
     return apiError(err);
   }

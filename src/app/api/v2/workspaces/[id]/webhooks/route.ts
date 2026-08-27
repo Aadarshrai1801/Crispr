@@ -18,9 +18,9 @@ const CreateSchema = z.object({
 export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
-    return json({ endpoints: listWebhookEndpoints(id), available_events: WEBHOOK_EVENTS });
+    return json({ endpoints: await listWebhookEndpoints(id), available_events: WEBHOOK_EVENTS });
   } catch (err) {
     return apiError(err);
   }
@@ -30,11 +30,11 @@ export async function POST(request: Request, { params }: Params) {
   try {
     const { id } = await params;
     const body = CreateSchema.parse(await request.json());
-    const ctx = requireContext(request, id);
+    const ctx = await requireContext(request, id);
     requireAdmin(ctx);
 
     const { newWebhookSecret } = await import("@/lib/webhooks");
-    const endpoint = insertWebhookEndpoint({
+    const endpoint = await insertWebhookEndpoint({
       workspace_id: id,
       url: body.url,
       secret: newWebhookSecret(),

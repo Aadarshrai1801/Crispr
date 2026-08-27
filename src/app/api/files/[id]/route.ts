@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readFile } from "node:fs/promises";
+import { readFileBytes } from "@/lib/storage";
 import { getDocument } from "@/lib/db";
 import { requireContext } from "@/lib/rbac";
 import { apiError } from "@/lib/api-helpers";
@@ -17,10 +17,10 @@ type Params = { params: Promise<{ id: string }> };
 export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const doc = getDocument(id);
+    const doc = await getDocument(id);
     if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
     await requireContext(request, doc.workspace_id);
-    const buffer = await readFile(doc.storage_path);
+    const buffer = await readFileBytes(doc.storage_path);
     return new Response(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "application/pdf",

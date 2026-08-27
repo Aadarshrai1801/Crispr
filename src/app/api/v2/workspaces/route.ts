@@ -18,15 +18,15 @@ const CreateSchema = z.object({
 export async function POST(request: Request) {
   try {
     const body = CreateSchema.parse(await request.json());
-    const userId = resolveUserId(request);
-    const ws = insertWorkspace({
+    const userId = await resolveUserId(request);
+    const ws = await insertWorkspace({
       name: body.name,
       owner_id: userId,
       approval_required: body.approval_required ?? false,
       confidence_threshold: body.confidence_threshold ?? undefined,
       plan_tier: body.plan_tier ?? "team",
     });
-    audit.write(ws.id, userId, "workspace.created", "workspace", ws.id, null, {
+    await audit.write(ws.id, userId, "workspace.created", "workspace", ws.id, null, {
       name: ws.name,
       plan_tier: ws.plan_tier,
       approval_required: Boolean(ws.approval_required),
@@ -42,7 +42,7 @@ export async function GET(request: Request) {
     // Blocker #1 hardening: this endpoint used to accept an arbitrary ?user_id=
     // and enumerate anyone's workspaces. It now only ever lists the session
     // user's own workspaces.
-    const workspaces = listWorkspacesForUser(resolveUserId(request));
+    const workspaces = await listWorkspacesForUser(await resolveUserId(request));
     return json({ workspaces });
   } catch (err) {
     return apiError(err);

@@ -63,9 +63,9 @@ async function deliver(endpoint: WebhookEndpointRow, payload: DispatchPayload) {
 }
 
 /** Fire-and-forget dispatch to all active endpoints subscribed to the event. */
-export function dispatchWebhook(event: WebhookEvent, workspaceId: string, data: Record<string, unknown>) {
+export async function dispatchWebhook(event: WebhookEvent, workspaceId: string, data: Record<string, unknown>) {
   try {
-    const endpoints = listWebhookEndpoints(workspaceId).filter(
+    const endpoints = (await listWebhookEndpoints(workspaceId)).filter(
       (e) => e.active === 1 && (JSON.parse(e.events || "[]") as string[]).includes(event)
     );
     for (const endpoint of endpoints) {
