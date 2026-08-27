@@ -94,20 +94,15 @@ export default function WorkspacePage() {
 
 function SettingsTab({ session }: { session: ReturnType<typeof useSession> }) {
   const ws = session.workspaces.find((w) => w.id === session.workspaceId);
-  const [approvalRequired, setApprovalRequired] = useState(false);
-  const [threshold, setThreshold] = useState(0.55);
   const [tier, setTier] = useState("team");
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newTier, setNewTier] = useState("team");
-  const [newApproval, setNewApproval] = useState(true);
   const [busyCreate, setBusyCreate] = useState(false);
 
   useEffect(() => {
     if (!ws) return;
-    setApprovalRequired(Boolean(ws.approval_required));
-    setThreshold(ws.confidence_threshold);
     setTier(ws.plan_tier);
   }, [ws]);
 
@@ -129,7 +124,7 @@ function SettingsTab({ session }: { session: ReturnType<typeof useSession> }) {
     if (newName.trim().length < 2) return;
     setBusyCreate(true);
     try {
-      const { workspace } = await api.createWorkspace({ name: newName.trim(), approval_required: newApproval, plan_tier: newTier });
+      const { workspace } = await api.createWorkspace({ name: newName.trim(), plan_tier: newTier });
       session.refresh();
       session.setWorkspace(workspace.id);
       setNewName("");
@@ -141,59 +136,11 @@ function SettingsTab({ session }: { session: ReturnType<typeof useSession> }) {
   return (
     <div className="space-y-8">
       <section className="rounded-2xl border border-line bg-surface p-5">
-        <h2 className="text-sm font-semibold">Approval workflow <span className="ml-1 font-mono text-[10px] uppercase text-ink-faint">FR-33</span></h2>
+        <h2 className="text-sm font-semibold">Review workflow</h2>
         <p className="mt-1 max-w-[60ch] text-[13px] leading-relaxed text-ink-soft">
-          When enabled, submitted corrections enter a pending queue and do not affect retrieval until an Approver or Admin
-          approves them. Rejected corrections are retained with a reason but never go live.
+          Corrections and edits submitted by Contributors are held in the Approvals queue and only go live for other
+          members after an Approver or Admin accepts them. Admins and Approvers publish their own changes immediately.
         </p>
-        <label className="mt-4 inline-flex cursor-pointer items-center gap-2.5">
-          <input
-            type="checkbox"
-            checked={approvalRequired}
-            onChange={(e) => {
-              setApprovalRequired(e.target.checked);
-              void save({ approval_required: e.target.checked }, e.target.checked ? "Approvals enabled" : "Approvals disabled");
-            }}
-            className="peer sr-only"
-          />
-          <span
-            className={cn(
-              "relative h-5.5 w-10 rounded-full transition-colors duration-200",
-              approvalRequired ? "bg-accent" : "bg-surface-2 border border-line-strong"
-            )}
-            style={{ height: 22 }}
-          >
-            <span
-              className={cn(
-                "absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow transition-all duration-200",
-                approvalRequired ? "left-[22px]" : "left-0.5"
-              )}
-              style={{ height: 18, width: 18 }}
-            />
-          </span>
-          <span className="text-[13px] font-medium">{approvalRequired ? "Approval required" : "Corrections go live instantly"}</span>
-        </label>
-
-        <div className="mt-6">
-          <label htmlFor="conf-threshold" className="block text-xs font-medium">
-            Confidence threshold <span className="font-mono text-[10px] uppercase text-ink-faint">FR-42 · answers below this are flagged “Needs review”</span>
-          </label>
-          <div className="mt-2 flex items-center gap-3">
-            <input
-              id="conf-threshold"
-              type="range"
-              min={0}
-              max={0.95}
-              step={0.05}
-              value={threshold}
-              onChange={(e) => setThreshold(Number(e.target.value))}
-              onMouseUp={() => void save({ confidence_threshold: threshold }, `Threshold set to ${threshold.toFixed(2)}`)}
-              onTouchEnd={() => void save({ confidence_threshold: threshold }, `Threshold set to ${threshold.toFixed(2)}`)}
-              className="h-1.5 w-64 accent-[var(--accent)]"
-            />
-            <span className="font-mono text-xs tabular-nums">{threshold.toFixed(2)}</span>
-          </div>
-        </div>
 
         {(saving || savedMsg) && (
           <p className={cn("mt-4 text-xs", savedMsg && !saving ? "text-accent" : "text-ink-faint")}>
@@ -240,10 +187,6 @@ function SettingsTab({ session }: { session: ReturnType<typeof useSession> }) {
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
-          <label className="inline-flex h-9 items-center gap-1.5 text-xs text-ink-soft">
-            <input type="checkbox" checked={newApproval} onChange={(e) => setNewApproval(e.target.checked)} />
-            approvals on
-          </label>
           <Button variant="primary" size="sm" disabled={newName.trim().length < 2 || busyCreate} onClick={() => void createWorkspace()}>
             {busyCreate ? "Creating…" : "Create"}
           </Button>

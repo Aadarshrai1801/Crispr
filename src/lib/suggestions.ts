@@ -230,7 +230,7 @@ export async function acceptSuggestion(
     note: "Created from a compounding-intelligence suggestion",
     submitted_by: actorId,
     suggested_correction_id: suggestion.id,
-    submitter_role: actorRole ?? null,
+    submitter_role: overrides?.submitterRole ?? null,
   });
 
   setSuggestedCorrectionStatus(suggestion.id, "accepted");

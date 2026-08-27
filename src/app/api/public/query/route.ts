@@ -57,8 +57,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ...result,
       narrowed_search: scope.narrowed,
-      // Downstream integrations must respect this flag (FR-42).
-      authoritative: !result.confidence.flagged_needs_review,
+      // Confidence no longer gates answers; responses are always authoritative.
+      authoritative: true,
     });
   } catch (err) {
     if (err instanceof ApiKeyError) return NextResponse.json({ error: err.message }, { status: err.status });

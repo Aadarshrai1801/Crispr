@@ -17,6 +17,7 @@ import { api, type DocumentDto, type VersionDiffSummary } from "@/lib/client/api
 import { useActiveDocuments } from "@/lib/client/use-active-documents";
 import { Button } from "@/components/ui/button";
 import { Chip, EmptyState, Skeleton, StatusDot } from "@/components/ui/primitives";
+import { confirmDialog } from "@/components/ui/dialogs";
 import { cn, formatDate } from "@/lib/utils";
 
 type UploadState = { name: string; file: File; error?: string; duplicateOf?: DocumentDto };
@@ -109,7 +110,13 @@ export default function DocumentsPage() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm("Delete this document? Its chunks, embeddings and document-scoped corrections are removed too.")) return;
+    const ok = await confirmDialog({
+      title: "Delete this document?",
+      body: "Its chunks, embeddings and document-scoped corrections are removed too. This cannot be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     await api.deleteDocument(id);
     setActiveIds(activeIds.filter((a) => a !== id));
     void load();

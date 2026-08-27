@@ -6,10 +6,12 @@ import {
   insertCorrection,
   listActiveCorrectionsForDocs,
   setCorrectionStatus,
+  setPendingEdit,
   updateCorrectionText,
   updateCorrectionScope,
   getWorkspace,
   listPendingCorrections,
+  type PendingEditPayload,
 } from "./db";
 import { removeCorrectionVector, searchCorrections, upsertCorrectionVectors } from "./vector";
 import { audit } from "./audit";
@@ -80,8 +82,9 @@ export async function detectConflict(workspaceId: string, documentIds: string[],
 }
 
 /**
- * FR-32/FR-33 submission path. In workspaces with approval_required the correction
- * enters `pending` and is invisible to retrieval until an Approver/Admin approves it.
+ * FR-32/FR-33 submission path, role-gated: fixes by Admins/Approvers go live
+ * immediately; every other member's correction enters `pending` and stays
+ * invisible to retrieval (and to other users) until an Approver/Admin approves.
  */
 export async function submitCorrection(input: SubmitCorrectionInput): Promise<SubmitCorrectionResult> {
   const log = getQueryLog(input.query_log_id);
@@ -89,9 +92,7 @@ export async function submitCorrection(input: SubmitCorrectionInput): Promise<Su
 
   const actorId = input.actor_id ?? log.user_id;
   const workspace = getWorkspace(log.workspace_id);
-  // FR-33 with role-aware gate: when approval mode is on, Admin/Approver fixes go
-  // live immediately (trusted reviewers); everyone else needs an approval.
-  const approvalRequired = Boolean(workspace?.approval_required) && !canApprove(input.submitter_role);
+  void workspace;
 
   const documentIds = JSON.parse(log.document_ids) as string[];
   const scope = input.scope ?? (documentIds.length === 1 ? "document" : "workspace");
@@ -116,7 +117,7 @@ export async function submitCorrection(input: SubmitCorrectionInput): Promise<Su
     }
   }
 
-  const status: CorrectionRow["status"] = approvalRequired ? "pending" : "active";
+  const status: CorrectionRow["status"] = canApprove(input.submitter_role) ? "active" : "pending";
 
   const correction = insertCorrection({
     workspace_id: log.workspace_id,
@@ -154,7 +155,7 @@ export async function submitCorrection(input: SubmitCorrectionInput): Promise<Su
     status,
     question: correction.question_text,
     submitted_by: actorId,
-    requires_approval: approvalRequired,
+    requires_approval: status === "pending",
   });
 
   return { correction, conflictWith: null };
@@ -243,7 +244,7 @@ export async function rejectCorrection(id: string, rejectorId: string, reason: s
   return updated;
 }
 
-export function canApprove(role: WorkspaceRole): boolean {
+export function canApprove(role: WorkspaceRole | null | undefined): boolean {
   return role === "Admin" || role === "Approver";
 }
 
@@ -270,6 +271,69 @@ export async function editCorrection(
     { question_text: existing.question_text, corrected_answer_text: existing.corrected_answer_text, note: existing.note },
     { question_text: updated.question_text, corrected_answer_text: updated.corrected_answer_text, note: updated.note });
   return updated;
+}
+
+/**
+ * Role-gated edit proposal (FR-33 spirit): edits from members without approval
+ * authority are stored as a pending proposal on the live correction. The
+ * original answer stays active and visible until an Approver/Admin accepts.
+ */
+export async function proposeCorrectionEdit(
+  id: string,
+  fields: PendingEditPayload,
+  actorId: string
+): Promise<CorrectionRow> {
+  const existing = getCorrection(id);
+  if (!existing) throw new ApprovalError("Correction not found", 404);
+  if (existing.status !== "active") {
+    throw new ApprovalError(`Only active corrections can be edited (current: ${existing.status}).`, 409);
+  }
+
+  setPendingEdit(id, fields, actorId);
+  audit.write(existing.workspace_id, actorId, "correction.edit_proposed", "correction", id,
+    { question_text: existing.question_text, corrected_answer_text: existing.corrected_answer_text, note: existing.note },
+    fields as unknown as Record<string, unknown>);
+  return getCorrection(id)!;
+}
+
+/** Approver/Admin decision on a proposed edit. Previous answer remains live until acceptance. */
+export async function reviewCorrectionEdit(
+  id: string,
+  decision: "accept" | "reject",
+  reviewerId: string,
+  reason?: string
+): Promise<CorrectionRow> {
+  const existing = getCorrection(id);
+  if (!existing) throw new ApprovalError("Correction not found", 404);
+  if (!existing.pending_edit) {
+    throw new ApprovalError("This correction has no pending edit proposal.", 409);
+  }
+
+  const proposed = JSON.parse(existing.pending_edit) as PendingEditPayload;
+  setPendingEdit(id, null, null);
+
+  if (decision === "accept") {
+    await updateFromProposal(existing, proposed);
+    const updated = getCorrection(id)!;
+    audit.write(existing.workspace_id, reviewerId, "correction.edit_approved", "correction", id,
+      { question_text: existing.question_text, corrected_answer_text: existing.corrected_answer_text, note: existing.note },
+      { question_text: updated.question_text, corrected_answer_text: updated.corrected_answer_text, note: updated.note, proposed_by: existing.pending_edit_by });
+    return updated;
+  }
+
+  audit.write(existing.workspace_id, reviewerId, "correction.edit_rejected", "correction", id,
+    proposed as unknown as Record<string, unknown>,
+    { reason: reason ?? null, proposed_by: existing.pending_edit_by });
+  return getCorrection(id)!;
+}
+
+async function updateFromProposal(current: CorrectionRow, proposed: PendingEditPayload): Promise<void> {
+  updateCorrectionText(current.id, proposed);
+  if (proposed.scope) {
+    updateCorrectionScope(current.id, proposed.scope, proposed.scope === "workspace" ? null : (proposed.document_id ?? current.document_id));
+  }
+  const updated = getCorrection(current.id)!;
+  if (isLive(updated)) await syncIndexRow(updated);
 }
 
 export async function retireCorrection(id: string, actorId?: string): Promise<CorrectionRow> {
@@ -317,9 +381,8 @@ export async function createCorrectionFromSuggestion(input: {
   suggested_correction_id: string;
   submitter_role?: WorkspaceRole | null;
 }): Promise<CorrectionRow> {
-  const workspace = getWorkspace(input.workspace_id);
-  const status: CorrectionRow["status"] =
-    workspace?.approval_required && !canApprove(input.submitter_role) ? "pending" : "active";
+  // Role-gated: only Admin/Approver acceptances go live immediately.
+  const status: CorrectionRow["status"] = canApprove(input.submitter_role) ? "active" : "pending";
 
   const correction = insertCorrection({
     workspace_id: input.workspace_id,
@@ -348,7 +411,7 @@ export async function createCorrectionFromSuggestion(input: {
     correction_id: correction.id,
     status,
     from_suggestion: input.suggested_correction_id,
-    requires_approval: Boolean(workspace?.approval_required),
+    requires_approval: status === "pending",
   });
 
   return correction;

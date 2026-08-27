@@ -72,6 +72,17 @@ export interface CorrectionDto {
   approved_at: string | null;
   rejection_reason: string | null;
   needs_version_review: number;
+  /** Proposed edit awaiting review — present only on corrections with a role-gated edit in flight. */
+  pending_edit?: {
+    question_text?: string;
+    corrected_answer_text?: string;
+    note?: string | null;
+    topic_tags?: string[];
+    scope?: "document" | "workspace";
+    document_id?: string | null;
+  } | null;
+  pending_edit_by?: string | null;
+  pending_edit_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -263,6 +274,8 @@ export const api = {
     jsonRequest<{ workspace: WorkspaceDto }>("/api/v2/workspaces", "POST", input),
   updateWorkspace: (id: string, patch: Partial<{ name: string; approval_required: boolean; confidence_threshold: number; plan_tier: string }>) =>
     jsonRequest<{ workspace: WorkspaceDto }>(`/api/v2/workspaces/${id}`, "PATCH", patch),
+  deleteWorkspace: (id: string) =>
+    jsonRequest<{ ok: boolean }>(`/api/v2/workspaces/${id}`, "DELETE"),
   members: (wsId: string) => jsonRequest<{ members: MemberDto[] }>(`/api/v2/workspaces/${wsId}/members`, "GET"),
   addMember: (wsId: string, userId: string, role: string) =>
     jsonRequest<{ member: MemberDto }>(`/api/v2/workspaces/${wsId}/members`, "POST", { user_id: userId, role }),
@@ -332,11 +345,13 @@ export const api = {
   ) => jsonRequest<CorrectionDto>(`/api/corrections/${id}`, "PATCH", fields),
 
   pendingCorrections: (workspaceId: string) =>
-    jsonRequest<{ corrections: CorrectionDto[] }>(`/api/v2/corrections/pending?workspace_id=${encodeURIComponent(workspaceId)}`, "GET"),
+    jsonRequest<{ corrections: CorrectionDto[]; edits: CorrectionDto[] }>(`/api/v2/corrections/pending?workspace_id=${encodeURIComponent(workspaceId)}`, "GET"),
   approveCorrection: (id: string, supersedeExisting = false) =>
     jsonRequest<{ correction: CorrectionDto }>(`/api/v2/corrections/${id}/approve`, "POST", { supersede_existing: supersedeExisting }),
   rejectCorrection: (id: string, reason: string) =>
     jsonRequest<{ correction: CorrectionDto }>(`/api/v2/corrections/${id}/reject`, "POST", { reason }),
+  reviewCorrectionEdit: (id: string, decision: "accept" | "reject", reason?: string) =>
+    jsonRequest<{ correction: CorrectionDto }>(`/api/v2/corrections/${id}/edit-review`, "POST", { decision, reason }),
   comments: (correctionId: string) =>
     jsonRequest<{ comments: CommentDto[] }>(`/api/v2/corrections/${correctionId}/comments`, "GET"),
   addComment: (correctionId: string, body: string) =>

@@ -7,6 +7,7 @@ import {
   ChatCircleDots,
   Check,
   CheckCircle,
+  PencilSimple,
   Warning,
   WarningCircle,
   X,
@@ -16,14 +17,16 @@ import { api, type ConflictAlertDto, type CorrectionDto, type CommentDto, type S
 import { useSession } from "@/lib/client/use-session";
 import { Button } from "@/components/ui/button";
 import { Chip, EmptyState, Skeleton } from "@/components/ui/primitives";
+import { confirmDialog, promptDialog, alertDialog } from "@/components/ui/dialogs";
 import { cn, formatDate } from "@/lib/utils";
 
-type Tab = "queue" | "suggestions" | "conflicts";
+type Tab = "queue" | "edits" | "suggestions" | "conflicts";
 
 export default function ApprovalsPage() {
   const session = useSession();
   const [tab, setTab] = useState<Tab>("queue");
   const [pending, setPending] = useState<CorrectionDto[] | null>(null);
+  const [editProposals, setEditProposals] = useState<CorrectionDto[] | null>(null);
   const [suggestions, setSuggestions] = useState<SuggestedCorrectionDto[] | null>(null);
   const [conflicts, setConflicts] = useState<ConflictAlertDto[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -34,6 +37,7 @@ export default function ApprovalsPage() {
     setError(null);
     const results = await Promise.allSettled([api.pendingCorrections(wsId), api.suggestions(wsId), api.conflicts(wsId)]);
     setPending(results[0].status === "fulfilled" ? results[0].value.corrections : []);
+    setEditProposals(results[0].status === "fulfilled" ? (results[0].value.edits ?? []) : []);
     setSuggestions(results[1].status === "fulfilled" ? results[1].value.suggestions.filter((s) => s.status === "pending") : []);
     setConflicts(results[2].status === "fulfilled" ? results[2].value.conflicts.filter((c) => c.status === "open") : []);
     if (results.some((r) => r.status === "rejected")) {
@@ -54,9 +58,13 @@ export default function ApprovalsPage() {
     } catch (err) {
       const e = err as Error & { status?: number; payload?: { code?: string } };
       if (e.payload?.code === "conflicting_active") {
-        if (confirm("A near-identical correction is already live.\n\nFirst-approved-wins by default. Supersede it with this one?")) {
-          await approve(c, true);
-        }
+        const ok = await confirmDialog({
+          title: "Near-identical correction already live",
+          body: "First-approved-wins by default. Supersede the existing correction with this one?",
+          confirmLabel: "Supersede",
+          danger: true,
+        });
+        if (ok) await approve(c, true);
       } else {
         setError(e.message);
       }
@@ -64,10 +72,17 @@ export default function ApprovalsPage() {
   }
 
   async function reject(c: CorrectionDto) {
-    const reason = prompt("Rejection reason (retained in the audit log):");
-    if (!reason || reason.trim().length < 3) return;
+    const reason = await promptDialog({
+      title: "Reject this correction?",
+      body: "The reason is retained in the audit log and shown to the submitter.",
+      confirmLabel: "Reject",
+      cancelLabel: "Keep pending",
+      danger: true,
+      input: { placeholder: "Rejection reason…", minLength: 3, hint: "Minimum 3 characters." },
+    });
+    if (!reason) return;
     try {
-      await api.rejectCorrection(c.id, reason.trim());
+      await api.rejectCorrection(c.id, reason);
       setNotice("Rejected with reason recorded.");
       await loadAll();
     } catch (err) {
@@ -75,7 +90,32 @@ export default function ApprovalsPage() {
     }
   }
 
+  async function reviewEdit(c: CorrectionDto, decision: "accept" | "reject") {
+    try {
+      if (decision === "reject") {
+        const reason = await promptDialog({
+          title: "Reject this edit?",
+          body: "The previous answer stays live. The reason is retained in the audit log.",
+          confirmLabel: "Reject edit",
+          cancelLabel: "Keep proposal",
+          danger: true,
+          input: { placeholder: "Reason for rejecting…", minLength: 3, hint: "Minimum 3 characters." },
+        });
+        if (!reason) return;
+        await api.reviewCorrectionEdit(c.id, "reject", reason);
+        setNotice("Edit rejected — the previous answer remains live.");
+      } else {
+        await api.reviewCorrectionEdit(c.id, "accept");
+        setNotice("Edit applied — the correction is updated and re-indexed.");
+      }
+      await loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Review failed");
+    }
+  }
+
   const pendingCount = pending?.length ?? 0;
+  const editCount = editProposals?.length ?? 0;
   const suggestionCount = suggestions?.length ?? 0;
   const conflictCount = conflicts?.length ?? 0;
 
@@ -93,6 +133,7 @@ export default function ApprovalsPage() {
       <div className="mb-6 flex flex-wrap items-center gap-1 border-b border-line pb-3">
         {([
           ["queue", `Queue (${pendingCount})`],
+          ["edits", `Edits (${editCount})`],
           ["suggestions", `Suggestions (${suggestionCount})`],
           ["conflicts", `Conflicts (${conflictCount})`],
         ] as Array<[Tab, string]>).map(([id, label]) => (
@@ -128,14 +169,16 @@ export default function ApprovalsPage() {
         </div>
       )}
 
-      {!session.hydrated || pending === null || suggestions === null || conflicts === null ? (
+      {!session.hydrated || pending === null || editProposals === null || suggestions === null || conflicts === null ? (
         <Skeleton className="h-64" />
       ) : tab === "queue" ? (
         <QueueTab
           corrections={pending}
-          onApprove={(c) => void approve(c)}
-          onReject={(c) => void reject(c)}
+          onApprove={(c) => approve(c)}
+          onReject={(c) => reject(c)}
         />
+      ) : tab === "edits" ? (
+        <EditsTab proposals={editProposals} onDecision={(c, d) => reviewEdit(c, d)} />
       ) : tab === "suggestions" ? (
         <SuggestionsTab suggestions={suggestions} onChanged={() => void loadAll()} />
       ) : (
@@ -153,8 +196,8 @@ function QueueTab({
   onReject,
 }: {
   corrections: CorrectionDto[];
-  onApprove: (c: CorrectionDto) => void;
-  onReject: (c: CorrectionDto) => void;
+  onApprove: (c: CorrectionDto) => Promise<void>;
+  onReject: (c: CorrectionDto) => Promise<void>;
 }) {
   const [sortKey, setSortKey] = useState<"age" | "document" | "submitter">("age");
 
@@ -171,7 +214,7 @@ function QueueTab({
       <EmptyState
         icon={<CheckCircle size={20} weight="light" />}
         title="Nothing awaiting review"
-        body='Submitted corrections land here when the workspace has "Approval required" enabled.'
+        body="Corrections and edits from Contributors land here for review — Admin/Approver changes go live immediately."
       />
     );
   }
@@ -196,7 +239,7 @@ function QueueTab({
   );
 }
 
-function PendingCard({ correction: c, onApprove, onReject }: { correction: CorrectionDto; onApprove: () => void; onReject: () => void }) {
+function PendingCard({ correction: c, onApprove, onReject }: { correction: CorrectionDto; onApprove: (c: CorrectionDto) => Promise<void>; onReject: (c: CorrectionDto) => Promise<void> }) {
   const reduce = useReducedMotion();
   const [openComments, setOpenComments] = useState(false);
   const [comments, setComments] = useState<CommentDto[] | null>(null);
@@ -223,7 +266,7 @@ function PendingCard({ correction: c, onApprove, onReject }: { correction: Corre
       setCommentText("");
       setComments(await api.comments(c.id).then((r) => r.comments));
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Comment failed");
+      void alertDialog({ title: "Comment failed", body: err instanceof Error ? err.message : "Could not post the comment." });
     }
   }
 
@@ -253,10 +296,10 @@ function PendingCard({ correction: c, onApprove, onReject }: { correction: Corre
       {c.note && <p className="mt-2 text-xs italic leading-relaxed text-ink-faint">Note: {c.note}</p>}
 
       <footer className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-2.5">
-        <Button size="sm" variant="primary" disabled={busy} onClick={() => { setBusy(true); onApprove(); }}>
+        <Button size="sm" variant="primary" disabled={busy} onClick={() => { setBusy(true); onApprove(c).finally(() => setBusy(false)); }}>
           <Check size={12} weight="bold" /> Approve
         </Button>
-        <Button size="sm" variant="danger" disabled={busy} onClick={() => { setBusy(true); onReject(); }}>
+        <Button size="sm" variant="danger" disabled={busy} onClick={() => { setBusy(true); onReject(c).finally(() => setBusy(false)); }}>
           <X size={12} weight="bold" /> Reject
         </Button>
         <span className="ml-auto flex items-center gap-2">
@@ -300,6 +343,85 @@ function PendingCard({ correction: c, onApprove, onReject }: { correction: Corre
           </motion.div>
         )}
       </AnimatePresence>
+    </motion.div>
+  );
+}
+
+/* ------------------------------ Edit proposals ------------------------------ */
+
+function EditsTab({
+  proposals,
+  onDecision,
+}: {
+  proposals: CorrectionDto[];
+  onDecision: (c: CorrectionDto, decision: "accept" | "reject") => void;
+}) {
+  if (proposals.length === 0) {
+    return (
+      <EmptyState
+        icon={<PencilSimple size={20} weight="light" />}
+        title="No proposed edits"
+        body="When Contributors or Viewers-of-record edit a live correction, the change lands here for review — the previous answer stays live until you accept it."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {proposals.map((c) => (
+        <EditProposalCard key={c.id} correction={c} onDecision={onDecision} />
+      ))}
+    </div>
+  );
+}
+
+function EditProposalCard({
+  correction: c,
+  onDecision,
+}: {
+  correction: CorrectionDto;
+  onDecision: (c: CorrectionDto, decision: "accept" | "reject") => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const proposal = c.pending_edit ?? {};
+
+  return (
+    <motion.div layout className="rounded-2xl border border-line bg-surface p-4">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <Chip tone="warn">edit proposed</Chip>
+        <Chip>{c.scope === "workspace" ? "workspace-wide" : c.document_id?.slice(0, 14) + "…"}</Chip>
+        <span className="ml-auto font-mono text-[10px] text-ink-faint tabular-nums">
+          proposed {formatDate(c.pending_edit_at ?? c.updated_at)} · by {(c.pending_edit_by ?? "").replace(/^user_/, "")}
+        </span>
+      </div>
+
+      <p className="mt-2.5 text-[13px] font-medium leading-snug">{c.question_text}</p>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        <div className="rounded-xl border border-danger/20 bg-danger-soft/50 p-2.5">
+          <p className="font-mono text-[9px] uppercase tracking-wider text-danger">current (still live)</p>
+          <p className="mt-1 line-clamp-4 text-xs leading-relaxed text-ink-soft">{c.corrected_answer_text}</p>
+        </div>
+        <div className="rounded-xl border border-accent-line bg-accent-soft p-2.5">
+          <p className="font-mono text-[9px] uppercase tracking-wider text-accent-strong">proposed replacement</p>
+          <p className="mt-1 line-clamp-4 text-xs leading-relaxed text-ink">
+            {proposal.corrected_answer_text ?? <span className="text-ink-faint">(unchanged)</span>}
+          </p>
+          {proposal.question_text && proposal.question_text !== c.question_text && (
+            <p className="mt-1.5 text-[11px] italic leading-snug text-ink-faint">question also edited: “{proposal.question_text}”</p>
+          )}
+        </div>
+      </div>
+
+      <footer className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-2.5">
+        <Button size="sm" variant="primary" disabled={busy} onClick={() => { setBusy(true); onDecision(c, "accept"); }}>
+          <Check size={12} weight="bold" /> Accept edit
+        </Button>
+        <Button size="sm" variant="danger" disabled={busy} onClick={() => { setBusy(true); onDecision(c, "reject"); }}>
+          <X size={12} weight="bold" /> Reject edit
+        </Button>
+        <span className="ml-auto text-[11px] text-ink-faint">Rejecting keeps the current answer untouched.</span>
+      </footer>
     </motion.div>
   );
 }

@@ -67,8 +67,8 @@ export function CorrectionForm({
         <p className="text-[13px] leading-relaxed">
           {saved.requiresApproval ? (
             <>
-              <span className="font-medium">Submitted for approval.</span> This workspace requires review — an Approver will
-              see it in the queue, and it goes live for everyone the moment it&apos;s approved.
+              <span className="font-medium">Submitted for approval.</span> An Approver or Admin will review it in the
+              queue — it goes live for everyone the moment it&apos;s approved.
             </>
           ) : (
             <>

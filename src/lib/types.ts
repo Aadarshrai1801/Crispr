@@ -126,6 +126,10 @@ export interface CorrectionRow {
   rejection_reason: string | null;
   needs_version_review: number; // boolean (FR-39)
   suggested_correction_id: string | null;
+  /** JSON-encoded proposed edit awaiting Approver/Admin review (role-gated edits). */
+  pending_edit: string | null;
+  pending_edit_by: string | null;
+  pending_edit_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -145,6 +149,9 @@ export type AuditActionType =
   | "correction.edited"
   | "correction.deleted"
   | "correction.retired"
+  | "correction.edit_proposed"
+  | "correction.edit_approved"
+  | "correction.edit_rejected"
   | "correction.superseded"
   | "comment.added"
   | "member.added"

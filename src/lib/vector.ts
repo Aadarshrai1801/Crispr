@@ -212,11 +212,12 @@ export async function searchCorrections(vector: number[], workspaceId: string, d
   const db = await getVectorDb();
   const names = await db.tableNames();
   if (!names.includes("corrections_index")) return [];
-  const table = await db.openTable("corrections_index");
+  const table = await openTableSafe(db, "corrections_index");
+  if (!table) return [];
   // scope='workspace' corrections match regardless of which docs are in play.
-  const filter = `workspace_id = '${workspaceId}' AND (scope = 'workspace' OR document_id IN (${documentIds
-    .map((d) => `'${d}'`)
-    .join(",")}))`;
+  // With no documents in play, only workspace-scoped corrections are eligible.
+  const docClause = documentIds.length ? ` OR document_id IN (${documentIds.map((d) => `'${d}'`).join(",")})` : "";
+  const filter = `workspace_id = '${workspaceId}' AND (scope = 'workspace'${docClause})`;
   const rows = (await cosineSearch(table, vector)
     .where(filter)
     .limit(20)
@@ -225,4 +226,9 @@ export async function searchCorrections(vector: number[], workspaceId: string, d
     .map((r) => ({ id: String(r.id), similarity: simFromDistance(r) }))
     .filter((h) => h.similarity >= threshold)
     .sort((a, b) => b.similarity - a.similarity);
+}
+
+async function openTableSafe(db: lancedb.Connection, name: string): Promise<lancedb.Table | null> {
+  const names = await db.tableNames();
+  return names.includes(name) ? await db.openTable(name) : null;
 }

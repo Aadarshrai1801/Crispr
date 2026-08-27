@@ -26,7 +26,13 @@ export async function GET(request: Request) {
     const wsId = url.searchParams.get("workspace_id") ?? request.headers.get("x-crisp-workspace-id") ?? defaultWorkspaceId();
     await requireContext(request, wsId); // FR-34: Viewers can view corrections
     const rows = listCorrections(wsId, documentId || undefined);
-    return NextResponse.json(rows.map((r) => ({ ...r, topic_tags: JSON.parse(r.topic_tags || "[]") as string[] })));
+    return NextResponse.json(
+      rows.map((r) => ({
+        ...r,
+        topic_tags: JSON.parse(r.topic_tags || "[]") as string[],
+        pending_edit: r.pending_edit ? JSON.parse(r.pending_edit) : null,
+      }))
+    );
   } catch (err) {
     return apiError(err);
   }

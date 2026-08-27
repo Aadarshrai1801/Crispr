@@ -127,7 +127,9 @@ export default function ChatPage() {
       const result = allDocsMode
         ? await api.askWorkspaceWide(question)
         : await api.ask(question, activeReadyIds);
-      setTurns((ts) => [...ts, { id: result.query_log_id, question, variants: [result] }]);
+      // Cached answers reuse the server's query_log_id, so the turn key must be
+      // locally unique rather than derived from it.
+      setTurns((ts) => [...ts, { id: crypto.randomUUID(), question, variants: [result] }]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {

@@ -77,10 +77,6 @@ export async function POST(request: Request) {
       question,
     });
 
-    const caveat =
-      result.confidence.flagged_needs_review
-        ? "\n:warning: _Low confidence answer — flagged `needs review`. Verify against the source before acting._\n"
-        : "";
     const citationLines = result.citations
       .slice(0, 5)
       .map((c) => `• ${(c.document_name ?? c.document_id).replace(/\.pdf$/i, "")} · p.${c.page}`)
@@ -88,7 +84,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       response_type: "in_channel",
-      text: `${caveat}*Q:* ${question}\n*A:* ${result.answer.replace(/\[(\d+)\]/g, "")}${citationLines ? `\n*Citations:*\n${citationLines}` : ""}`,
+      text: `*Q:* ${question}\n*A:* ${result.answer.replace(/\[(\d+)\]/g, "")}${citationLines ? `\n*Citations:*\n${citationLines}` : ""}`,
     });
   } catch (err) {
     logger.error({ err }, "[slack.events]");

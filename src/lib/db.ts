@@ -66,6 +66,10 @@ function migrate(db: Database.Database) {
   ensureColumn(db, "corrections", "rejection_reason", "TEXT");
   ensureColumn(db, "corrections", "needs_version_review", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "corrections", "suggested_correction_id", "TEXT");
+  // Role-gated edits: proposed changes held for Approver/Admin review.
+  ensureColumn(db, "corrections", "pending_edit", "TEXT");
+  ensureColumn(db, "corrections", "pending_edit_by", "TEXT");
+  ensureColumn(db, "corrections", "pending_edit_at", "TEXT");
   ensureColumn(db, "users", "password_hash", "TEXT");
 
   db.exec(`
@@ -576,6 +580,45 @@ export function countMembers(workspaceId: string): number {
   return (getDb().prepare("SELECT COUNT(*) AS n FROM workspace_members WHERE workspace_id = ?").get(workspaceId) as { n: number }).n;
 }
 
+/**
+ * Irreversible workspace teardown. Removes every workspace-scoped row in one
+ * transaction. Vector index rows and uploaded files are handled by the caller
+ * (they live outside SQLite). The default seeded workspace is never deletable.
+ */
+export function deleteWorkspaceCascade(workspaceId: string): void {
+  const db = getDb();
+  const docIds = (db.prepare("SELECT id FROM documents WHERE workspace_id = ?").all(workspaceId) as Array<{ id: string }>).map((r) => r.id);
+  const corrIds = (db.prepare("SELECT id FROM corrections WHERE workspace_id = ?").all(workspaceId) as Array<{ id: string }>).map((r) => r.id);
+
+  const tx = db.transaction(() => {
+    if (docIds.length) {
+      const ph = docIds.map(() => "?").join(",");
+      db.prepare(`DELETE FROM document_versions WHERE document_id IN (${ph})`).run(...docIds);
+      db.prepare(`DELETE FROM ingest_jobs WHERE document_id IN (${ph})`).run(...docIds);
+      db.prepare(`DELETE FROM documents WHERE id IN (${ph})`).run(...docIds);
+    }
+    if (corrIds.length) {
+      const ph = corrIds.map(() => "?").join(",");
+      db.prepare(`DELETE FROM correction_comments WHERE correction_id IN (${ph})`).run(...corrIds);
+      db.prepare(`DELETE FROM corrections WHERE id IN (${ph})`).run(...corrIds);
+    }
+    for (const table of [
+      "conflict_alerts",
+      "suggested_corrections",
+      "integration_connections",
+      "api_keys",
+      "webhook_endpoints",
+      "audit_log",
+      "query_logs",
+    ]) {
+      db.prepare(`DELETE FROM ${table} WHERE workspace_id = ?`).run(workspaceId);
+    }
+    db.prepare("DELETE FROM workspace_members WHERE workspace_id = ?").run(workspaceId);
+    db.prepare("DELETE FROM workspaces WHERE id = ?").run(workspaceId);
+  });
+  tx();
+}
+
 /* ------------------------- Documents ------------------------- */
 
 export type NewDocumentInput = Omit<DocumentRow, "created_at" | "ocr_warning" | "source_type" | "source_connection_id" | "current_version_id" | "version_number"> & {
@@ -897,6 +940,37 @@ export function listPendingCorrections(workspaceId: string): CorrectionRow[] {
   return getDb()
     .prepare("SELECT * FROM corrections WHERE workspace_id = ? AND status = 'pending' ORDER BY created_at ASC")
     .all(workspaceId) as CorrectionRow[];
+}
+
+/** Active/live corrections with a proposed edit awaiting review (role-gated edits). */
+export function listCorrectionsWithPendingEdits(workspaceId: string): CorrectionRow[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM corrections WHERE workspace_id = ? AND pending_edit IS NOT NULL AND status = 'active' ORDER BY pending_edit_at ASC"
+    )
+    .all(workspaceId) as CorrectionRow[];
+}
+
+export interface PendingEditPayload {
+  question_text?: string;
+  corrected_answer_text?: string;
+  note?: string | null;
+  topic_tags?: string[];
+  scope?: "document" | "workspace";
+  document_id?: string | null;
+}
+
+export function setPendingEdit(id: string, payload: PendingEditPayload | null, editorId: string | null): void {
+  getDb()
+    .prepare(
+      `UPDATE corrections SET
+        pending_edit = ?,
+        pending_edit_by = ?,
+        pending_edit_at = CASE WHEN ? IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now') END,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+       WHERE id = ?`
+    )
+    .run(payload === null ? null : JSON.stringify(payload), editorId, payload === null ? null : editorId, id);
 }
 
 export function listActiveCorrectionsForDocs(workspaceId: string, documentIds: string[]): CorrectionRow[] {

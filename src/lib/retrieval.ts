@@ -6,7 +6,6 @@ import {
   findCachedAnswer,
   getCorrection,
   getDocument,
-  getWorkspace,
   incrementCorrectionStats,
   insertQueryLog,
   listDocuments,
@@ -54,16 +53,12 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
   const { workspaceId, userId, documentIds, question } = opts;
   const isRetry = Boolean(opts.parentLog);
   const attempt = opts.parentLog ? opts.parentLog.attempt + 1 : 0;
-  const threshold = getWorkspace(workspaceId)?.confidence_threshold ?? config.confidenceThreshold;
 
   // ---- Cache identical fresh queries (cost control), never retries ----
   if (!isRetry) {
     const cached = findCachedAnswer(workspaceId, normalizeQuestion(question), documentIds);
     if (cached && Date.now() - new Date(cached.created_at).getTime() < 24 * 3600 * 1000) {
-      const payload = payloadFromLog(cached);
-      payload.confidence.threshold = threshold;
-      payload.confidence.flagged_needs_review = payload.confidence.score < threshold;
-      return payload;
+      return payloadFromLog(cached);
     }
   }
 
@@ -92,7 +87,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
         attempt: 0,
         strategy_note: `correction-match@${top.similarity.toFixed(3)}`,
         confidence_score: confidenceForCorrection(),
-        confidence_threshold: threshold,
+        confidence_threshold: null,
         flagged_needs_review: false,
       });
       // Confirmation loop: treat early serves against a new phrasing as a soft match
@@ -105,7 +100,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
         source_type: "correction",
         citations: [],
         groundedness: 100,
-        confidence: buildConfidence(confidenceForCorrection(), threshold),
+        confidence: buildConfidence(confidenceForCorrection()),
         correction: {
           id: correction.id,
           corrected_answer_text: correction.corrected_answer_text,
@@ -148,8 +143,8 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
       attempt,
       strategy_note: isRetry ? `retry-widened-topk=${topK}` : "fresh",
       confidence_score: confidenceForNoAnswer(),
-      confidence_threshold: threshold,
-      flagged_needs_review: true,
+      confidence_threshold: null,
+      flagged_needs_review: false,
     });
     return {
       query_log_id: queryLogId,
@@ -158,7 +153,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
       source_type: "no_answer",
       citations: [],
       groundedness: 0,
-      confidence: buildConfidence(confidenceForNoAnswer(), threshold),
+      confidence: buildConfidence(confidenceForNoAnswer()),
       correction: null,
       attempt,
       strategy_note: "No matching chunks retrieved",
@@ -211,7 +206,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
   const sourceType: SourceType = isNoAnswer ? "no_answer" : "document";
   const groundedness = isNoAnswer ? 0 : computeGroundedness(answerText, [...usedIndices].map((i) => i + 1));
 
-  // FR-42: confidence from retrieval relevance + source agreement (+ grounding).
+  // Informational confidence score from retrieval relevance + source agreement (+ grounding).
   const confidenceScore = isNoAnswer
     ? confidenceForNoAnswer()
     : confidenceFromDocumentAnswer({
@@ -219,7 +214,7 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
         citedCount: usedIndices.size,
         groundedness,
       });
-  const confidence = buildConfidence(confidenceScore, threshold);
+  const confidence = buildConfidence(confidenceScore);
 
   insertQueryLog({
     id: queryLogId,
@@ -235,8 +230,8 @@ export async function answerQuestion(opts: AnswerOptions): Promise<QueryResultPa
     attempt,
     strategy_note: isRetry ? `retry-topk=${topK}+strict-grounding` : `vector-topk=${topK}`,
     confidence_score: confidence.score,
-    confidence_threshold: threshold,
-    flagged_needs_review: confidence.flagged_needs_review,
+    confidence_threshold: null,
+    flagged_needs_review: false,
   });
 
   return {
@@ -271,7 +266,6 @@ function payloadFromLog(log: QueryLogRow): QueryResultPayload {
       };
     }
   }
-  const threshold = log.confidence_threshold ?? config.confidenceThreshold;
   const score = log.confidence_score ?? (log.source_type === "correction" ? 0.99 : 0.5);
   return {
     query_log_id: log.id,
@@ -280,7 +274,7 @@ function payloadFromLog(log: QueryLogRow): QueryResultPayload {
     source_type: log.source_type,
     citations: JSON.parse(log.citations) as Citation[],
     groundedness: log.source_type === "correction" ? 100 : -1,
-    confidence: buildConfidence(score, threshold),
+    confidence: buildConfidence(score),
     correction: correctionMeta,
     attempt: log.attempt,
     strategy_note: "Cached identical query",
@@ -303,7 +297,7 @@ export async function originalDocumentAnswer(workspaceId: string, documentIds: s
       source_type: "no_answer",
       citations: [],
       groundedness: 0,
-      confidence: buildConfidence(confidenceForNoAnswer(), config.confidenceThreshold),
+      confidence: buildConfidence(confidenceForNoAnswer()),
       correction: null,
       attempt: 0,
       strategy_note: "Original document answer (on-demand)",
@@ -353,8 +347,7 @@ export async function originalDocumentAnswer(workspaceId: string, documentIds: s
         chunkScores: chunks.map((c) => c.score),
         citedCount: usedIndices.size,
         groundedness: computeGroundedness(answerText, [...usedIndices].map((i) => i + 1)),
-      }),
-      config.confidenceThreshold
+      })
     ),
     correction: null,
     attempt: 0,

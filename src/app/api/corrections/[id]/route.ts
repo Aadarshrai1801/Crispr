@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { correctionHistory, editCorrection, retireCorrection } from "@/lib/corrections";
+import { canApprove, correctionHistory, editCorrection, proposeCorrectionEdit, retireCorrection } from "@/lib/corrections";
 import { getCorrection, setNeedsVersionReview } from "@/lib/db";
 import { requireContext, requireContributor } from "@/lib/rbac";
 import { audit } from "@/lib/audit";
@@ -30,10 +30,20 @@ export async function GET(request: Request, { params }: Params) {
   } catch (err) {
     return apiError(err);
   }
+  // Full lifecycle: version chain + every audited event touching those versions.
+  const chain = correctionHistory(id);
+  const chainIds = new Set(chain.map((c) => c.id));
+  const { audit } = await import("@/lib/audit");
+  const events = audit
+    .list(row.workspace_id, 5000)
+    .filter((e) => e.target_type === "correction" && chainIds.has(e.target_id))
+    .reverse();
   return NextResponse.json({
     ...row,
     topic_tags: JSON.parse(row.topic_tags || "[]") as string[],
-    history: correctionHistory(id),
+    pending_edit: row.pending_edit ? JSON.parse(row.pending_edit) : null,
+    history: chain,
+    events,
   });
 }
 
@@ -69,6 +79,19 @@ export async function PATCH(request: Request, { params }: Params) {
         actor_id: ctx.userId,
       });
       return NextResponse.json(updated);
+    }
+
+    // Role-gated edits: Admin/Approver apply immediately; everyone else's edit
+    // becomes a proposal that keeps the previous answer live until accepted.
+    if (!canApprove(ctx.role)) {
+      const proposal = await proposeCorrectionEdit(id, {
+        question_text: body.question_text,
+        corrected_answer_text: body.corrected_answer_text,
+        note: body.note === undefined ? undefined : body.note,
+        topic_tags: body.topic_tags,
+        scope: body.scope,
+      }, ctx.userId);
+      return NextResponse.json({ ...proposal, topic_tags: JSON.parse(proposal.topic_tags || "[]"), edit_pending_review: true });
     }
 
     const updated = await editCorrection(id, {

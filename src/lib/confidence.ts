@@ -1,8 +1,9 @@
 import type { ConfidenceScore } from "./types";
 
 /**
- * FR-42: answer confidence derived from retrieval relevance and source agreement,
+ * Answer confidence derived from retrieval relevance and source agreement,
  * blended with the citation-groundedness heuristic already used by the app.
+ * The score is informational only — it never gates or flags answers.
  *
  * Calibration notes:
  * - MiniLM-L6-v2 cosines for genuinely relevant passages typically land 0.40-0.70;
@@ -46,11 +47,11 @@ export function confidenceForNoAnswer(): number {
   return 0.2;
 }
 
-export function buildConfidence(score: number, threshold: number): ConfidenceScore {
+export function buildConfidence(score: number): ConfidenceScore {
   const rounded = Math.round(clamp01(score) * 100) / 100;
   return {
     score: rounded,
-    threshold,
-    flagged_needs_review: rounded < threshold,
+    threshold: 0,
+    flagged_needs_review: false,
   };
 }

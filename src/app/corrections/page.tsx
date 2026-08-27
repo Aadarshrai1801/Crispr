@@ -17,10 +17,30 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { api, type CommentDto, type CorrectionDto, type DocumentDto } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Chip, EmptyState, Skeleton } from "@/components/ui/primitives";
+import { confirmDialog, alertDialog } from "@/components/ui/dialogs";
 import { cn, formatDate } from "@/lib/utils";
 
 interface CorrectionWithHistory extends CorrectionDto {
   history?: CorrectionDto[];
+  events?: Array<{
+    id: string;
+    action_type: string;
+    actor_id: string;
+    timestamp: string;
+    after_state: string | null;
+  }>;
+}
+
+function prettyAction(action: string): string {
+  const label = action.replace(/^correction\./, "").replace(/_/g, " ");
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function eventTone(action: string): "accent" | "warn" | "danger" | "neutral" {
+  if (action === "correction.approved") return "accent";
+  if (action === "correction.rejected") return "danger";
+  if (action === "correction.submitted") return "warn";
+  return "neutral";
 }
 
 export default function CorrectionsPage() {
@@ -33,8 +53,10 @@ export default function CorrectionsPage() {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [histories, setHistories] = useState<Record<string, CorrectionWithHistory[]>>({});
+  const [events, setEvents] = useState<Record<string, CorrectionWithHistory["events"]>>({});
   const [editing, setEditing] = useState<CorrectionDto | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const reduce = useReducedMotion();
 
   async function load() {
@@ -58,11 +80,8 @@ export default function CorrectionsPage() {
       if (statusFilter === "review") {
         if (!c.needs_version_review) return false;
       } else if (statusFilter !== "all" && c.status !== statusFilter) return false;
-      if (docFilter === "workspace") {
-        if (c.scope !== "workspace") return false;
-      } else if (docFilter !== "all" && c.document_id !== docFilter) {
-        if (!(docFilter === "all")) return false;
-      }
+      if (docFilter === "workspace" && c.scope !== "workspace") return false;
+      if (docFilter !== "all" && docFilter !== "workspace" && c.document_id !== docFilter) return false;
       if (query.trim()) {
         const q = query.toLowerCase();
         const haystack = `${c.question_text} ${c.corrected_answer_text} ${c.wrong_answer_text} ${c.note ?? ""} ${(c.topic_tags ?? []).join(" ")}`;
@@ -78,8 +97,10 @@ export default function CorrectionsPage() {
     if (key) {
       try {
         const res = await fetch(`/api/corrections/${c.id}`);
+        if (!res.ok) throw new Error("Failed to load history");
         const data = (await res.json()) as CorrectionWithHistory;
         setHistories((h) => ({ ...h, [c.id]: data.history ?? [c] }));
+        setEvents((e) => ({ ...e, [c.id]: data.events ?? [] }));
       } catch {
         setHistories((h) => ({ ...h, [c.id]: [c] }));
       }
@@ -87,7 +108,13 @@ export default function CorrectionsPage() {
   }
 
   async function retire(c: CorrectionDto) {
-    if (!confirm("Retire this correction? Future queries will fall back to document-derived answers.")) return;
+    const ok = await confirmDialog({
+      title: "Retire this correction?",
+      body: "Future queries will fall back to document-derived answers. This is recorded in the audit trail.",
+      confirmLabel: "Retire",
+      danger: true,
+    });
+    if (!ok) return;
     setBusyId(c.id);
     try {
       await api.editCorrection(c.id, { action: "retire" });
@@ -111,7 +138,12 @@ export default function CorrectionsPage() {
     if (!editing) return;
     setBusyId(editing.id);
     try {
-      await api.editCorrection(editing.id, { action: "edit", ...fields });
+      const updated = await api.editCorrection(editing.id, { action: "edit", ...fields });
+      setNotice(
+        (updated as CorrectionDto & { edit_pending_review?: boolean }).edit_pending_review
+          ? "Edit submitted for approval — the current answer stays live until an Admin/Approver accepts it."
+          : "Correction updated."
+      );
       setEditing(null);
       await load();
     } finally {
@@ -128,6 +160,12 @@ export default function CorrectionsPage() {
           source PDF.
         </p>
       </header>
+
+      {notice && (
+        <div className="mb-4 rounded-xl border border-accent-line bg-accent-soft p-3 text-[13px] text-accent-strong">
+          {notice}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="mb-5 flex flex-wrap items-center gap-2">
@@ -235,6 +273,25 @@ export default function CorrectionsPage() {
 
                   {c.note && <p className="mt-2 text-xs italic leading-relaxed text-ink-faint">Note: {c.note}</p>}
 
+                  {/* Role-gated edit proposal pending review — previous answer stays live */}
+                  {c.pending_edit && (
+                    <div className="mt-2.5 flex flex-col gap-1.5 rounded-xl border border-warn/30 bg-warn-soft px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <PencilSimple size={13} weight="fill" className="text-warn" />
+                        <p className="min-w-0 flex-1 text-[11px] leading-snug text-warn">
+                          An edit to this correction is awaiting Admin/Approver review — the answer below is still the
+                          live one.
+                        </p>
+                      </div>
+                      {c.pending_edit.corrected_answer_text && (
+                        <p className="text-[11px] leading-relaxed text-ink-soft">
+                          Proposed: “{c.pending_edit.corrected_answer_text.slice(0, 160)}
+                          {c.pending_edit.corrected_answer_text.length > 160 ? "…" : ""}”
+                        </p>
+                      )}
+                    </div>
+                  )}
+
                   {/* FR-39: version-update review banner */}
                   {c.needs_version_review === 1 && (
                     <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-xl border border-warn/30 bg-warn-soft px-3 py-2">
@@ -264,7 +321,7 @@ export default function CorrectionsPage() {
                       {c.status === "active" && (
                         <>
                           <Button variant="ghost" size="sm" onClick={() => setEditing(c)}>
-                            <PencilSimple size={12} weight="light" /> Edit
+                            <PencilSimple size={12} weight="light" /> {c.pending_edit ? "Edit (in review)" : "Edit"}
                           </Button>
                           <Button variant="ghost" size="sm" disabled={busyId === c.id} onClick={() => void retire(c)}>
                             <Trash size={12} weight="light" /> Retire
@@ -313,6 +370,20 @@ export default function CorrectionsPage() {
                           ))}
                           {history.length === 1 && (
                             <li className="text-ink-faint">No prior versions — this is the original correction.</li>
+                          )}
+                          {(events[c.id]?.length ?? 0) > 0 && (
+                            <li className="pt-2">
+                              <p className="mb-1.5 font-mono text-[9px] uppercase tracking-wider text-ink-faint">Lifecycle</p>
+                              <ol className="space-y-1.5">
+                                {(events[c.id] ?? []).map((ev) => (
+                                  <li key={ev.id} className="flex flex-wrap items-baseline gap-x-2 text-[11px] leading-snug">
+                                    <span className="font-mono text-[10px] text-ink-faint tabular-nums">{formatDate(ev.timestamp)}</span>
+                                    <Chip tone={eventTone(ev.action_type)}>{prettyAction(ev.action_type)}</Chip>
+                                    <span className="text-ink-faint">by {ev.actor_id.replace(/^user_/, "")}</span>
+                                  </li>
+                                ))}
+                              </ol>
+                            </li>
                           )}
                         </ol>
                       </motion.div>
@@ -410,7 +481,7 @@ function CommentToggle({ correctionId }: { correctionId: string }) {
       setText("");
       setComments(await api.comments(correctionId).then((r) => r.comments));
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Comment failed");
+      void alertDialog({ title: "Comment failed", body: err instanceof Error ? err.message : "Could not post the comment." });
     }
   }
 }
